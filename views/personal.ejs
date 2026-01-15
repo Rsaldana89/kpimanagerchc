@@ -1,0 +1,598 @@
+<%- include('partials/header') %>
+<%
+  const _departamentos = (typeof departamentos !== 'undefined' && Array.isArray(departamentos)) ? departamentos : [];
+  const _deptFilter = (typeof deptFilter !== 'undefined' ? deptFilter : '');
+  const _search = (typeof search !== 'undefined' ? search : '');
+  const _showBajas = (typeof showBajas !== 'undefined' ? showBajas : false);
+  const _searchEncoded = (typeof searchEncoded !== 'undefined' ? searchEncoded : encodeURIComponent(_search || ''));
+%>
+<h2 class="mb-3">Personal</h2>
+
+<div class="card mb-3">
+  <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
+    <div>
+      <div class="fw-semibold">Administración de empleados</div>
+      <div class="text-muted small">Tip: pulsa <strong>Editar</strong> en una fila, modifica y luego <strong>Guardar</strong>. Los cambios se guardan sin recargar (no pierdes tu lugar).</div>
+    </div>
+  </div>
+</div>
+
+<!-- Filtros (por default NO se muestran BAJAS) -->
+<form id="filtersForm" method="get" action="/personal" class="row g-2 align-items-center mb-3">
+  <div class="col-12 col-lg">
+    <input type="text" name="q" class="form-control" placeholder="Buscar por nombre, puesto o No. empleado" value="<%= typeof search !== 'undefined' ? search : '' %>">
+  </div>
+  <div class="col-12 col-lg-auto">
+    <select name="dept" id="deptFilter" class="form-select">
+      <option value="">Todos los departamentos</option>
+      <% _departamentos.forEach(d => { %>
+        <option value="<%= d.id %>" <%= (String(_deptFilter) === String(d.id)) ? 'selected' : '' %>><%= d.nombre %></option>
+      <% }) %>
+    </select>
+  </div>
+  <div class="col-12 col-lg-auto">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" id="showBajas" name="showBajas" value="1" <%= _showBajas ? 'checked' : '' %>>
+      <label class="form-check-label" for="showBajas">Mostrar BAJAS</label>
+    </div>
+  </div>
+  <div class="col-12 col-lg-auto">
+    <button type="submit" class="btn btn-outline-secondary">Aplicar</button>
+  </div>
+</form>
+
+<!-- Botones para importar desde incidencias -->
+<div class="mb-3 d-flex gap-2">
+  <form action="/personal/import-nuevos" method="post">
+    <button type="submit" class="btn btn-primary">Actualizar personal desde incidencias</button>
+  </form>
+  <form action="/personal/import-puestos" method="post">
+    <button type="submit" class="btn btn-secondary">Actualizar puestos desde incidencias</button>
+  </form>
+  <form action="/personal/import-bajas" method="post">
+    <button type="submit" class="btn btn-outline-danger">Actualizar BAJAS desde incidencias</button>
+  </form>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-bordered table-hover table-sm align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>#</th>
+        <th>ID Empleado</th>
+        <th>Nombre</th>
+        <th>Puesto</th>
+        <th>Responde a</th>
+        <th>Departamento</th>
+        <th>Sucursal</th>
+        <th>Correo</th>
+        <th>Usuario</th>
+        <th>Contraseña</th>
+        <th>Login habilitado</th>
+        <th>Acciones</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% empleados.forEach((emp, idx) => { %>
+        <tr class="employee-row <%= emp.departamento_nombre === 'BAJA' ? 'baja-row' : '' %>" data-row-id="<%= emp.id %>" data-emp-no="<%= emp.incidencia_id ? String(emp.incidencia_id) : '' %>" data-action="/personal/edit/<%= emp.id %>">
+            <!-- Número de fila considerando la paginación -->
+            <td><%= (typeof offset !== 'undefined' ? offset : 0) + idx + 1 %></td>
+            <!-- ID de empleado con padding a 5 dígitos -->
+            <td><%= (emp.incidencia_id ? String(emp.incidencia_id).padStart(5, '0') : '') %></td>
+            <td>
+              <input type="text" name="nombre" value="<%= emp.nombre %>" class="form-control form-control-sm readlike" style="min-width:240px" required readonly data-editable>
+            </td>
+            <td>
+              <select name="puesto_id" class="form-select form-select-sm readlike" required disabled data-editable>
+                <% puestos.forEach(p => { %>
+                  <option value="<%= p.id %>" <%= p.id === emp.puesto_id ? 'selected' : '' %>>
+                    <%= p.nombre %> - <%= p.departamento_nombre %>
+                  </option>
+                <% }) %>
+              </select>
+            </td>
+            <!-- Jefe directo (sólo lectura) -->
+            <td>
+              <input type="text" class="form-control form-control-sm" value="<%= emp.jefe_nombre || '' %>" readonly data-field="jefe_nombre">
+            </td>
+            <td>
+              <input type="text" class="form-control form-control-sm" value="<%= emp.departamento_nombre || '' %>" readonly data-field="departamento_nombre">
+            </td>
+            <td>
+              <select name="sucursal_id" class="form-select form-select-sm readlike" disabled data-editable data-only-ops>
+                <option value="">-- Sin sucursal --</option>
+                <% sucursales.forEach(suc => { %>
+                  <option value="<%= suc.id %>" <%= (emp.sucursal_nombre && suc.nombre === emp.sucursal_nombre) ? 'selected' : '' %>><%= suc.nombre %></option>
+                <% }) %>
+              </select>
+            </td>
+            <td><input type="email" name="correo" value="<%= emp.correo || '' %>" class="form-control form-control-sm readlike" readonly data-editable></td>
+            <% const loginActive = !!emp.login_enabled; %>
+            <% const hasUser = !!(emp.username && String(emp.username).trim() !== ''); %>
+            <td>
+              <div class="d-flex gap-1 align-items-center">
+                <input
+                  type="text"
+                  name="login_username"
+                  value="<%= emp.username || '' %>"
+                  class="form-control form-control-sm readlike"
+                  autocomplete="new-password"
+                  data-lpignore="true"
+                  data-login-username
+                  disabled
+                  readonly
+                  data-editable
+                >
+              </div>
+              <div class="small text-muted" data-auto-preview></div>
+            </td>
+            <td>
+              <div class="d-flex gap-1 align-items-center">
+                <input
+                  type="text"
+                  name="password"
+                  value=""
+                  class="form-control form-control-sm readlike"
+                  autocomplete="new-password"
+                  data-lpignore="true"
+                  data-login-password
+                  disabled
+                  data-editable
+                  placeholder="Nueva contraseña (opcional)"
+                >
+                <button type="button" class="btn btn-sm btn-outline-warning" title="Resetear contraseña" data-reset-login disabled>
+                  <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </div>
+              <div class="small text-muted" data-password-hint></div>
+            </td>
+            <td class="text-center">
+              <div class="d-flex flex-column align-items-center gap-1">
+                <input type="checkbox" name="login_enabled" value="1" <%= emp.login_enabled ? 'checked' : '' %> data-editable disabled data-toggle-login>
+                <small class="text-muted">Acceso</small>
+              </div>
+            </td>
+            <td>
+              <div class="d-flex flex-column gap-1 employee-actions">
+                <div class="d-flex gap-1 flex-wrap">
+                  <button type="button" class="btn btn-sm btn-outline-primary" data-edit-row>Editar</button>
+                  <button type="button" class="btn btn-sm btn-success" data-save-row disabled>Guardar</button>
+                  <button type="button" class="btn btn-sm btn-outline-secondary d-none" data-cancel-row>Cancelar</button>
+                  <span class="badge bg-primary ms-2 d-none" data-editing-badge>Editando</span>
+                </div>
+                <span class="save-pill d-none" data-save-pill></span>
+                <!-- Flags para generación rápida de credenciales (se manejan en JS) -->
+                <input type="hidden" name="auto_generate_login" value="0" data-auto-generate>
+                <input type="hidden" name="reset_login_password" value="0" data-reset-password>
+              </div>
+            </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+
+<!-- Navegación de paginación -->
+<% if (typeof totalPages !== 'undefined' && totalPages > 1) { %>
+  <nav aria-label="Paginación de empleados" class="mt-3">
+    <ul class="pagination">
+      <li class="page-item <%= currentPage === 1 ? 'disabled' : '' %>">
+        <a class="page-link" href="/personal?page=<%= currentPage - 1 %><%= _search ? '&q=' + _searchEncoded : '' %><%= _deptFilter ? '&dept=' + encodeURIComponent(_deptFilter) : '' %><%= _showBajas ? '&showBajas=1' : '' %>" tabindex="-1">Anterior</a>
+      </li>
+      <% for (let i = 1; i <= totalPages; i++) { %>
+        <li class="page-item <%= i === currentPage ? 'active' : '' %>"><a class="page-link" href="/personal?page=<%= i %><%= _search ? '&q=' + _searchEncoded : '' %><%= _deptFilter ? '&dept=' + encodeURIComponent(_deptFilter) : '' %><%= _showBajas ? '&showBajas=1' : '' %>"><%= i %></a></li>
+      <% } %>
+      <li class="page-item <%= currentPage === totalPages ? 'disabled' : '' %>">
+        <a class="page-link" href="/personal?page=<%= currentPage + 1 %><%= _search ? '&q=' + _searchEncoded : '' %><%= _deptFilter ? '&dept=' + encodeURIComponent(_deptFilter) : '' %><%= _showBajas ? '&showBajas=1' : '' %>">Siguiente</a>
+      </li>
+    </ul>
+  </nav>
+<% } %>
+
+<!-- Modal: credenciales generadas -->
+<div class="modal fade" id="credsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Credenciales generadas</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-warning mb-3">
+          Guarda esta información. La contraseña sólo se muestra cuando se genera o se resetea.
+        </div>
+        <div class="mb-2">
+          <div class="text-muted">Usuario</div>
+          <div class="d-flex gap-2 align-items-center">
+            <code id="credsUser" class="fs-6"></code>
+            <button class="btn btn-sm btn-outline-secondary" type="button" id="copyUserBtn"><i class="bi bi-clipboard"></i></button>
+          </div>
+        </div>
+        <div>
+          <div class="text-muted">Contraseña</div>
+          <div class="d-flex gap-2 align-items-center">
+            <code id="credsPass" class="fs-6"></code>
+            <button class="btn btn-sm btn-outline-secondary" type="button" id="copyPassBtn"><i class="bi bi-clipboard"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Listo</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<%- include('partials/footer') %>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const credsModalEl = document.getElementById('credsModal');
+    const credsModal = (credsModalEl && window.bootstrap) ? new bootstrap.Modal(credsModalEl) : null;
+    const credsUserEl = document.getElementById('credsUser');
+    const credsPassEl = document.getElementById('credsPass');
+
+    const copyToClipboard = async (text) => {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+    };
+
+    const getEmpNo = (row) => String(row?.dataset?.empNo || '').trim();
+
+    const updateAutoPreview = (row) => {
+      const hint = row.querySelector('[data-auto-preview]');
+      if (!hint) return;
+      const cb = row.querySelector('input[data-toggle-login]');
+      const u = row.querySelector('input[data-login-username]');
+      const autoFlag = row.querySelector('input[data-auto-generate]');
+      if (!cb || !u) return;
+
+      if (!cb.checked) {
+        hint.textContent = '';
+        return;
+      }
+
+      const empNo = getEmpNo(row);
+      const hasUser = String(u.value || '').trim() !== '';
+      const isAuto = !!autoFlag && autoFlag.value === '1' && !hasUser;
+
+      if (isAuto && empNo) {
+        hint.innerHTML = `Se generará: <strong>${empNo}</strong>`;
+      } else if (hasUser) {
+        hint.innerHTML = `Usuario: <strong>${u.value}</strong>`;
+      } else {
+        hint.textContent = '';
+      }
+    };
+
+    const updatePasswordHint = (row) => {
+      const hint = row.querySelector('[data-password-hint]');
+      if (!hint) return;
+      const cb = row.querySelector('input[data-toggle-login]');
+      const p = row.querySelector('input[data-login-password]');
+      const autoFlag = row.querySelector('input[data-auto-generate]');
+      const resetFlag = row.querySelector('input[data-reset-password]');
+
+      if (!cb || !cb.checked) {
+        hint.textContent = '';
+        return;
+      }
+      const empNo = getEmpNo(row);
+      const isAuto = !!autoFlag && autoFlag.value === '1';
+      const isReset = !!resetFlag && resetFlag.value === '1';
+      const hasTyped = p && String(p.value || '').trim() !== '';
+
+      if ((isAuto || isReset) && empNo) {
+        hint.innerHTML = `Contraseña: <span class="text-muted">se generará automáticamente</span>`;
+      } else if (hasTyped) {
+        hint.innerHTML = `Contraseña: <span class="text-muted">se actualizará al guardar</span>`;
+      } else {
+        hint.innerHTML = `Contraseña: <span class="text-muted">sin cambios</span>`;
+      }
+    };
+
+    const setEditMode = (row, isEditing) => {
+      const editBtn = row.querySelector('[data-edit-row]');
+      const cancelBtn = row.querySelector('[data-cancel-row]');
+      const saveBtn = row.querySelector('[data-save-row]');
+
+      row.classList.toggle('is-editing', isEditing);
+      if (editBtn) editBtn.disabled = isEditing;
+      if (saveBtn) saveBtn.disabled = !isEditing;
+      if (cancelBtn) cancelBtn.classList.toggle('d-none', !isEditing);
+
+      const badge = row.querySelector('[data-editing-badge]');
+      if (badge) badge.classList.toggle('d-none', !isEditing);
+
+      // Inputs editables
+      row.querySelectorAll('[data-editable]').forEach(el => {
+        const tag = el.tagName.toLowerCase();
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        if (tag === 'select' || type === 'checkbox') {
+          el.disabled = !isEditing;
+        } else {
+          el.readOnly = !isEditing;
+          // si trae disabled en HTML, en lectura se mantiene; en edición se habilita
+          if (isEditing) el.disabled = false;
+        }
+      });
+
+      // Reset password button
+      row.querySelectorAll('button[data-reset-login]').forEach(b => { b.disabled = !isEditing; });
+
+      // Sucursal: solo editable si OPERACIONES
+      const sucSel = row.querySelector('select[name="sucursal_id"]');
+      if (sucSel) {
+        const dept = (row.querySelector('[data-field="departamento_nombre"]') || {}).value || '';
+        const puestoSel = row.querySelector('select[name="puesto_id"]');
+        const puestoTxt = puestoSel ? (puestoSel.options[puestoSel.selectedIndex]?.text || '') : '';
+        const looksOps = String(dept).toUpperCase() === 'OPERACIONES' || String(puestoTxt).toUpperCase().includes('OPERACIONES');
+        sucSel.disabled = !(isEditing && looksOps);
+      }
+
+      // Login inputs: en edición se habilitan si Acceso está marcado
+      const cb = row.querySelector('input[data-toggle-login]');
+      const u = row.querySelector('input[data-login-username]');
+      const p = row.querySelector('input[data-login-password]');
+      const resetBtn = row.querySelector('button[data-reset-login]');
+      const autoFlag = row.querySelector('input[data-auto-generate]');
+      if (cb && u && p) {
+        if (!isEditing) {
+          u.disabled = true; p.disabled = true;
+          if (resetBtn) resetBtn.disabled = true;
+        } else {
+          const enabled = cb.checked;
+          if (!enabled) {
+            u.disabled = true; p.disabled = true;
+            if (resetBtn) resetBtn.disabled = true;
+          } else {
+            const hasUser = String(u.value || '').trim() !== '';
+            if (!hasUser && autoFlag) autoFlag.value = '1';
+            const isAuto = autoFlag && autoFlag.value === '1' && !hasUser;
+            u.disabled = isAuto;
+            p.disabled = isAuto;
+            if (resetBtn) resetBtn.disabled = false;
+          }
+        }
+      }
+
+      updateAutoPreview(row);
+      updatePasswordHint(row);
+    };
+
+    const snapshotRow = (row) => {
+      const snap = {};
+      row.querySelectorAll('input[name], select[name], textarea[name]').forEach(el => {
+        if (el.type === 'checkbox') snap[el.name] = el.checked ? '1' : '0';
+        else snap[el.name] = el.value;
+      });
+      row.dataset.snapshot = JSON.stringify(snap);
+    };
+
+    const restoreSnapshot = (row) => {
+      const snap = row.dataset.snapshot ? JSON.parse(row.dataset.snapshot) : null;
+      if (!snap) return;
+      Object.entries(snap).forEach(([k,v]) => {
+        const el = row.querySelector(`[name="${CSS.escape(k)}"]`);
+        if (!el) return;
+        if (el.type === 'checkbox') el.checked = (v === '1');
+        else el.value = v;
+      });
+      updateAutoPreview(row);
+      updatePasswordHint(row);
+    };
+
+    // Importante: NO usamos FormData porque envía multipart/form-data y Express (body-parser)
+    // no lo parsea por defecto. Enviamos x-www-form-urlencoded.
+    const buildUrlEncodedFromRow = (row) => {
+      const params = new URLSearchParams();
+      row.querySelectorAll('input[name], select[name], textarea[name]').forEach(el => {
+        if (el.type === 'checkbox') {
+          // siempre enviamos 1/0 para evitar ambigüedad
+          params.set(el.name, el.checked ? (el.value || '1') : '0');
+        } else {
+          params.set(el.name, (el.value ?? '').toString());
+        }
+      });
+      return params;
+    };
+
+    // Inicialización por fila
+    document.querySelectorAll('tr.employee-row').forEach(row => {
+      snapshotRow(row);
+      setEditMode(row, false);
+
+      const editBtn = row.querySelector('[data-edit-row]');
+      const cancelBtn = row.querySelector('[data-cancel-row]');
+      const saveBtn = row.querySelector('[data-save-row]');
+
+      if (editBtn) {
+        editBtn.addEventListener('click', () => {
+          snapshotRow(row);
+          setEditMode(row, true);
+          const focusEl = row.querySelector('input[name="nombre"]');
+          if (focusEl) focusEl.focus();
+        });
+      }
+
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', () => {
+          restoreSnapshot(row);
+          const autoFlag = row.querySelector('input[data-auto-generate]');
+          const resetFlag = row.querySelector('input[data-reset-password]');
+          if (autoFlag) autoFlag.value = '0';
+          if (resetFlag) resetFlag.value = '0';
+          setEditMode(row, false);
+        });
+      }
+
+      // toggles login
+      const cb = row.querySelector('input[data-toggle-login]');
+      const u = row.querySelector('input[data-login-username]');
+      const p = row.querySelector('input[data-login-password]');
+      const resetBtn = row.querySelector('button[data-reset-login]');
+      const autoFlag = row.querySelector('input[data-auto-generate]');
+      const resetFlag = row.querySelector('input[data-reset-password]');
+
+      if (cb) cb.addEventListener('change', () => {
+        if (cb.checked && u && String(u.value||'').trim()==='' && autoFlag) autoFlag.value = '1';
+        // si están editando, se refleja; si no, forzamos modo edición para evitar guardar silencioso
+        setEditMode(row, true);
+        updateAutoPreview(row);
+        updatePasswordHint(row);
+      });
+
+      if (u) u.addEventListener('input', () => {
+        if (autoFlag) autoFlag.value = '0';
+        if (resetFlag) resetFlag.value = '0';
+        updateAutoPreview(row);
+      });
+
+      if (p) p.addEventListener('input', () => {
+        if (autoFlag) autoFlag.value = '0';
+        if (resetFlag) resetFlag.value = '0';
+        updatePasswordHint(row);
+      });
+
+      if (resetBtn) resetBtn.addEventListener('click', () => {
+        if (autoFlag) autoFlag.value = '1';
+        if (resetFlag) resetFlag.value = '1';
+        if (p) p.value = '';
+        updatePasswordHint(row);
+        updateAutoPreview(row);
+      });
+
+      const puestoSel = row.querySelector('select[name="puesto_id"]');
+      if (puestoSel) puestoSel.addEventListener('change', async () => {
+        setEditMode(row, true);
+        // Actualizar campos de Departamento y Responde a en UI de forma inmediata
+        try {
+          const pid = puestoSel.value;
+          if (!pid) return;
+          const resp = await fetch(`/personal/puesto-info/${encodeURIComponent(pid)}`, {
+            headers: { 'Accept': 'application/json' }
+          });
+          const data = await resp.json();
+          if (!data || !data.ok || !data.puesto) return;
+
+          const deptField = row.querySelector('[data-field="departamento_nombre"]');
+          const jefeField = row.querySelector('[data-field="jefe_nombre"]');
+          if (deptField) deptField.value = data.puesto.departamento_nombre || '';
+          if (jefeField) jefeField.value = data.puesto.responde_a_puesto_nombre || '';
+
+          // Sucursal solo si OPERACIONES
+          const sucSel = row.querySelector('select[name="sucursal_id"]');
+          if (sucSel) {
+            const isOps = !!data.puesto.is_operaciones;
+            sucSel.disabled = !isOps;
+            if (!isOps) sucSel.value = '';
+          }
+        } catch (e) {
+          // Silencioso: UI sigue funcionando aunque falle el fetch
+        }
+      });
+
+      // Guardar (sin recargar)
+      if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+          const pill = row.querySelector('[data-save-pill]');
+          const setPill = (kind, text) => {
+            if (!pill) return;
+            pill.classList.remove('d-none','ok','err');
+            pill.classList.add(kind);
+            pill.innerHTML = text;
+          };
+
+          saveBtn.disabled = true;
+          try {
+            const action = row.dataset.action;
+            const params = buildUrlEncodedFromRow(row);
+            const resp = await fetch(action, {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+              },
+              body: params.toString()
+            });
+            const data = await resp.json();
+            if (!data.ok) throw new Error(data.error || 'No se pudo guardar');
+
+            // Actualizar campos de lectura
+            if (data.employee) {
+              const deptField = row.querySelector('[data-field="departamento_nombre"]');
+              const jefeField = row.querySelector('[data-field="jefe_nombre"]');
+              if (deptField) deptField.value = data.employee.departamento_nombre || '';
+              if (jefeField) jefeField.value = data.employee.jefe_nombre || '';
+
+              const cb2 = row.querySelector('input[data-toggle-login]');
+              const u2 = row.querySelector('input[data-login-username]');
+              const auto2 = row.querySelector('input[data-auto-generate]');
+              const reset2 = row.querySelector('input[data-reset-password]');
+              if (cb2) cb2.checked = !!data.employee.login_enabled;
+              if (u2) u2.value = data.employee.username || '';
+              if (auto2) auto2.value = '0';
+              if (reset2) reset2.value = '0';
+
+              const sucSel2 = row.querySelector('select[name="sucursal_id"]');
+              if (sucSel2) {
+                const isOps = (data.employee.departamento_nombre || '') === 'OPERACIONES';
+                sucSel2.disabled = !isOps;
+              }
+            }
+
+            // Mostrar credenciales si se generaron
+            if (data.generatedCreds && credsModal) {
+              if (credsUserEl) credsUserEl.textContent = data.generatedCreds.username || '';
+              if (credsPassEl) credsPassEl.textContent = data.generatedCreds.password || '';
+              credsModal.show();
+            }
+
+            setPill('ok', '✔ Guardado');
+            setTimeout(() => { if (pill) pill.classList.add('d-none'); }, 1100);
+
+            snapshotRow(row);
+            setEditMode(row, false);
+          } catch (err) {
+            setPill('err', '⚠ No se pudo guardar');
+            setTimeout(() => { if (pill) pill.classList.add('d-none'); }, 1800);
+            alert(err.message || String(err));
+          } finally {
+            saveBtn.disabled = false;
+          }
+        });
+      }
+    });
+
+    // Copiar a portapapeles (modal)
+    const copyUserBtn = document.getElementById('copyUserBtn');
+    const copyPassBtn = document.getElementById('copyPassBtn');
+    if (copyUserBtn) {
+      copyUserBtn.addEventListener('click', async () => {
+        const t = (credsUserEl && credsUserEl.textContent) ? credsUserEl.textContent : '';
+        if (!t) return;
+        await copyToClipboard(t);
+        copyUserBtn.classList.add('btn-success');
+        setTimeout(() => copyUserBtn.classList.remove('btn-success'), 700);
+      });
+    }
+    if (copyPassBtn) {
+      copyPassBtn.addEventListener('click', async () => {
+        const t = (credsPassEl && credsPassEl.textContent) ? credsPassEl.textContent : '';
+        if (!t) return;
+        await copyToClipboard(t);
+        copyPassBtn.classList.add('btn-success');
+        setTimeout(() => copyPassBtn.classList.remove('btn-success'), 700);
+      });
+    }
+  });
+</script>

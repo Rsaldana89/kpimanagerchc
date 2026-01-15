@@ -1,0 +1,83 @@
+const express = require('express');
+const router = express.Router();
+const { pool } = require('../db');
+const isAuth = require('../middleware/isAuth');
+
+/*
+ * Construye un árbol de puestos basado en la relación responde_a.
+ * Recibe una lista de objetos {id, nombre, responde_a_id}.  Devuelve
+ * un array de nodos raíz, cada uno con su lista de hijos.  Esta
+ * función es puramente de utilidad para estructurar los datos
+ * necesarias en la vista de organigrama.
+ */
+function buildPositionTree(positions) {
+  // Crear un mapa de puestos por id. Incluye nombre y departamento
+  const posMap = new Map();
+  positions.forEach(p => {
+    posMap.set(p.id, {
+      id: p.id,
+      nombre: p.nombre,
+      departamento: p.departamento_nombre || null,
+      children: []
+    });
+  });
+  let roots = [];
+  positions.forEach(p => {
+    const node = posMap.get(p.id);
+    if (p.responde_a_id && posMap.has(p.responde_a_id)) {
+      posMap.get(p.responde_a_id).children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+  return roots;
+}
+
+// Genera HTML de lista para el organigrama a partir de un árbol de posiciones
+function buildOrgHtml(nodes) {
+  let html = '';
+  nodes.forEach(node => {
+    html += '<li>';
+    // Tarjeta de puesto
+    html += '<div class="org-card">';
+    html += '<strong>' + node.nombre + '</strong>';
+    if (node.departamento) {
+      html += '<div class="text-muted small">' + node.departamento + '</div>';
+    }
+    html += '</div>';
+    // Hijos
+    if (node.children && node.children.length) {
+      html += '<ul>' + buildOrgHtml(node.children) + '</ul>';
+    }
+    html += '</li>';
+  });
+  return html;
+}
+
+/*
+ * GET /organigrama
+ * Construye y muestra el organigrama de la compañía.  Se utiliza la
+ * tabla puestos para crear el árbol.  Por simplicidad se muestra
+ * solo el nombre de los puestos.
+ */
+router.get('/', isAuth, async (req, res) => {
+  try {
+    // Cargar puestos junto con su departamento y la columna responde_a
+    const [puestos] = await pool.execute(
+      'SELECT p.id, p.nombre, p.responde_a_id, d.nombre AS departamento_nombre FROM puestos p JOIN departamentos d ON p.departamento_id = d.id'
+    );
+    const tree = buildPositionTree(puestos);
+    // Generar HTML del organigrama para evitar problemas de include
+    const treeHtml = '<ul class="org-list">' + buildOrgHtml(tree) + '</ul>';
+    res.render('organigrama', {
+      title: 'Organigrama',
+      treeHtml
+    });
+  } catch (err) {
+    console.error('Error al cargar organigrama:', err);
+    req.flash('error', 'No se pudo generar el organigrama');
+    return res.redirect('/dashboard');
+  }
+});
+
+module.exports = router;

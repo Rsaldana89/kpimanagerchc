@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= (title ? title + ' - ' : '') %>KPI Manager CHC</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="/css/login.css">
+  <link rel="icon" type="image/png" href="/favicon/favicon.png">
+  <link rel="icon" type="image/x-icon" href="/favicon/favicon.ico">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-3">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/dashboard">KPI Manager CHC <span class="badge bg-warning text-dark ms-2">Alpha 0.95</span></a>
+    <% if (user) { %>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+          <li class="nav-item"><a class="nav-link" href="/dashboard">Mis KPIs</a></li>
+          <% if (user && (user.role === 'admin' || user.role === 'manager')) { %>
+            <li class="nav-item"><a class="nav-link" href="/personal">Personal</a></li>
+            <li class="nav-item"><a class="nav-link" href="/puestos">Puestos</a></li>
+            <li class="nav-item"><a class="nav-link" href="/kpis">KPIs</a></li>
+          <% } %>
+          <% if (user) { %>
+            <li class="nav-item"><a class="nav-link" href="/organigrama">Organigrama</a></li>
+          <% } %>
+        </ul>
+        <span class="navbar-text text-light me-3">
+          Hola, <%= user.nombre %>
+          <% if (user.puesto_nombre) { %>
+            &nbsp;<small>(<%= user.puesto_nombre %>
+            <% if (user.departamento_nombre) { %>
+              - <%= user.departamento_nombre %>
+            <% } %>
+            )</small>
+          <% } %>
+        </span>
+        <a class="btn btn-outline-light" href="/logout">Cerrar sesión</a>
+      </div>
+    <% } %>
+  </div>
+</nav>
+<div class="container">
+  <% if (success_msg && success_msg.length) { %>
+    <div class="alert alert-success"><%= success_msg %></div>
+  <% } %>
+  <% if (error_msg && error_msg.length) { %>
+    <div class="alert alert-danger"><%= error_msg %></div>
+  <% } %>

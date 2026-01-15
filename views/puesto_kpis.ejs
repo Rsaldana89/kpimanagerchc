@@ -1,0 +1,18 @@
+<%- include('partials/header') %>
+<h2>Asignar KPIs al puesto <%= puesto.nombre %></h2>
+<p>Seleccione los KPIs que aplican al puesto.  Solo se muestran los indicadores del departamento <strong><%= puesto.departamento %></strong>.</p>
+
+<form method="post" action="/puestos/<%= puesto.id %>">
+  <div class="mb-3">
+    <% kpis.forEach(kpi => { %>
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" name="kpi_ids" value="<%= kpi.id %>" id="kpi_<%= kpi.id %>" <%= kpi.checked ? 'checked' : '' %>>
+        <label class="form-check-label" for="kpi_<%= kpi.id %>"><%= kpi.nombre %></label>
+      </div>
+    <% }) %>
+  </div>
+  <button type="submit" class="btn btn-primary">Guardar asignaciones</button>
+  <a href="/puestos" class="btn btn-secondary">Cancelar</a>
+</form>
+
+<%- include('partials/footer') %>

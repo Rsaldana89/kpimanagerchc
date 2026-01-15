@@ -1,0 +1,7 @@
+<% if (!nodes || nodes.length === 0) { %>
+  <div class="text-muted small">Sin colaboradores en este nivel.</div>
+<% } else { %>
+  <% nodes.forEach(n => { %>
+    <%- include('sub_kpi_node', { node: n, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
+  <% }) %>
+<% } %>

@@ -1,0 +1,22 @@
+/* Login branding + light polish */
+.login-branding{
+  text-align:center;
+  margin: 18px 0 10px 0;
+}
+.login-logo{
+  width: 120px;
+  max-width: 35vw;
+  height: auto;
+  display:inline-block;
+  margin-bottom: 6px;
+}
+.login-title{
+  font-size: 1.35rem;
+  margin: 0;
+  font-weight: 700;
+}
+.version{
+  font-size: .9rem;
+  color:#6c757d;
+  margin-top: 2px;
+}

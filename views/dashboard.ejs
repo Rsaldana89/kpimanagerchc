@@ -1,0 +1,638 @@
+<%- include('partials/header') %>
+<% const _showBajas = (typeof showBajas !== 'undefined' ? showBajas : false); %>
+<% const fmtDate = (d) => { if (!d) return ''; const dd = new Date(d); if (isNaN(dd.getTime())) return ''; return dd.toLocaleDateString('es-MX'); }; %>
+<h2 class="mb-4">Mis KPIs
+  <% if (typeof currentEmpNo !== 'undefined' && String(currentEmpNo || '').trim() !== '') { %>
+    <span class="badge bg-light text-dark border ms-2">No. <%= String(currentEmpNo).padStart(5,'0') %></span>
+  <% } %>
+  <% if (typeof currentEmpName !== 'undefined' && String(currentEmpName || '').trim() !== '') { %>
+    <span class="ms-2"><%= currentEmpName %></span>
+  <% } %>
+  &nbsp;—&nbsp;
+  <% const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']; %>
+  <%= monthNames[selectedMonth - 1] %> <%= selectedYear %>
+  <small class="text-muted">(periodo mensual)</small>
+</h2>
+<p>En esta tabla puedes capturar tus resultados mensuales para cada KPI asignado. Selecciona un periodo y guarda tu resultado para ese mes. Si el KPI no es numérico o porcentaje, puedes escribir texto libre; el color se calcula automáticamente para valores numéricos.</p>
+
+<!-- Formulario para seleccionar periodo -->
+<form method="get" action="/dashboard" class="row row-cols-lg-auto g-3 align-items-center mb-3">
+  <div class="col-12">
+    <label for="anio" class="form-label mb-0">Año:</label>
+    <select name="anio" id="anio" class="form-select form-select-sm">
+      <% const currentYearValue = new Date().getFullYear();
+         for (let y = currentYearValue - 2; y <= currentYearValue + 1; y++) { %>
+        <option value="<%= y %>" <%= selectedYear === y ? 'selected' : '' %>><%= y %></option>
+      <% } %>
+    </select>
+  </div>
+  <div class="col-12">
+    <label for="mes" class="form-label mb-0">Mes:</label>
+    <select name="mes" id="mes" class="form-select form-select-sm">
+      <% monthNames.forEach((mn, idx) => { const m = idx + 1; %>
+        <option value="<%= m %>" <%= selectedMonth === m ? 'selected' : '' %>><%= mn %></option>
+      <% }); %>
+    </select>
+  </div>
+  <div class="col-12">
+    <button type="submit" class="btn btn-sm btn-primary">Cambiar periodo</button>
+  </div>
+  <div class="col-12">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" name="showBajas" value="1" id="showBajas" <%= _showBajas ? 'checked' : '' %>>
+      <label class="form-check-label" for="showBajas">Mostrar personal en BAJA</label>
+    </div>
+  </div>
+
+</form>
+
+<div class="d-flex flex-wrap gap-2 mb-2">
+  <!-- Exportaciones -->
+  <div class="btn-group">
+    <button type="button" class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+      Exportar mis KPIs
+    </button>
+    <ul class="dropdown-menu">
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/self?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period">
+          Periodo (mes)
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/self?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=annual">
+          Historial anual
+        </a>
+      </li>
+    </ul>
+  </div>
+
+  <div class="btn-group">
+    <button type="button" class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+      Exportar mi equipo
+    </button>
+    <ul class="dropdown-menu">
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/team?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period&showBajas=<%= _showBajas ? '1' : '0' %>">
+          Exportar todos (mes)
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/team?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=annual&showBajas=<%= _showBajas ? '1' : '0' %>">
+          Exportar todos (anual)
+        </a>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<div class="table-responsive">
+
+  <table class="table table-bordered align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>KPI</th>
+        <th>Objetivo</th>
+        <th>Unidad</th>
+        <th>Criterios de calificación</th>
+        <th class="text-center">Resultado</th>
+        <th>Comentarios</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% kpis.forEach(kpi => {
+           const res = (resultados[kpi.id] && resultados[kpi.id][selectedMonth]) || {};
+           let colorClass = '';
+           if (res.color === 'rojo') colorClass = 'bg-danger text-light';
+           if (res.color === 'amarillo') colorClass = 'bg-warning';
+           if (res.color === 'verde') colorClass = 'bg-success text-light';
+           const isLocked = (res.visto_bueno === 1);
+           const puntaje = res.color === 'rojo' ? 40 : (res.color === 'amarillo' ? 70 : (res.color === 'verde' ? 100 : ''));
+           const estado = isLocked ? 'APROBADO' : (res.revision_por ? 'EN REVISIÓN' : 'ABIERTO');
+           const estadoClass = (estado === 'APROBADO') ? 'bg-success text-light' : (estado === 'EN REVISIÓN' ? 'bg-warning text-dark' : 'bg-secondary text-light');
+      %>
+      <tr data-kpi-row data-empleado-id="<%= user.id %>" data-kpi-id="<%= kpi.id %>" data-can-approve="<%= canApproveSelf ? '1' : '0' %>">
+        <td><strong><%= kpi.nombre %></strong></td>
+        <td><%= kpi.objetivo %></td>
+        <td><%= kpi.unidad %></td>
+        <td>
+          <%
+            const fmt = (v) => {
+              if (v === null || v === undefined || v === '') return '';
+              const n = Number(v);
+              if (!Number.isFinite(n)) return String(v);
+              const s = String(n);
+              // 80.00 -> 80 ; 80.50 -> 80.5
+              return s.replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
+            };
+
+            const st = (kpi.score_type || '').toUpperCase();
+            const dir = (kpi.direction || 'HIGHER_BETTER').toUpperCase();
+            const ty = (kpi.threshold_yellow ?? '');
+            const tg = (kpi.threshold_green ?? '');
+            const hasThresholds = (ty !== '' && tg !== '');
+            const cr = (kpi.criterion_red || '');
+            const cy = (kpi.criterion_yellow || '');
+            const cg = (kpi.criterion_green || '');
+            const hasCriteria = (cr || cy || cg);
+          %>
+
+          <% if (st === 'CRITERION') { %>
+            <% if (hasCriteria) { %>
+              <small>
+                Rojo: <%= cr || '-' %><br>
+                Amarillo: <%= cy || '-' %><br>
+                Verde: <%= cg || '-' %>
+              </small>
+            <% } else { %>
+              <small class="text-muted">(Sin criterios definidos en Catálogo)</small>
+            <% } %>
+          <% } else { %>
+            <% if (hasThresholds) { %>
+              <small>
+                <span class="text-muted">Sentido:</span>
+                <strong><%= dir === 'LOWER_BETTER' ? '↓' : '↑' %></strong><br>
+
+                <span class="text-muted">Amarillo:</span>
+                <strong><%= fmt(ty) %></strong><br>
+
+                <span class="text-muted">Verde:</span>
+                <strong><%= fmt(tg) %></strong>
+
+                <div class="text-muted" style="font-size: 11px; line-height: 1.2; margin-top:4px;">
+                  Rojo: <%= dir === 'LOWER_BETTER' ? 'mayor a Amarillo' : 'menor a Amarillo' %>
+                </div>
+              </small>
+            <% } else { %>
+              <small class="text-muted">(Sin umbrales definidos en Catálogo)</small>
+            <% } %>
+          <% } %>
+        </td>
+
+        <td class="p-1">
+          <form method="post" action="/dashboard/save" class="d-flex align-items-center" data-kpi-form data-kpi-id="<%= kpi.id %>">
+            <input type="hidden" name="kpi_id" value="<%= kpi.id %>">
+            <input type="hidden" name="anio" value="<%= selectedYear %>">
+            <input type="hidden" name="mes" value="<%= selectedMonth %>">
+            <% if ((kpi.score_type || '').toUpperCase() === 'CRITERION' && (kpi.criterion_red || kpi.criterion_yellow || kpi.criterion_green)) { %>
+              <select name="valor"
+                      class="form-select form-select-sm <%= colorClass %>"
+                      style="width:190px;"
+                      data-kpi-valor
+                      <%= isLocked ? 'disabled' : '' %>>
+                <option value="" <%= (res.valor || '') === '' ? 'selected' : '' %>>(Selecciona...)</option>
+                <% if (kpi.criterion_red) { %>
+                  <option value="<%= kpi.criterion_red %>" <%= (res.valor === kpi.criterion_red) ? 'selected' : '' %>><%= kpi.criterion_red %></option>
+                <% } %>
+                <% if (kpi.criterion_yellow) { %>
+                  <option value="<%= kpi.criterion_yellow %>" <%= (res.valor === kpi.criterion_yellow) ? 'selected' : '' %>><%= kpi.criterion_yellow %></option>
+                <% } %>
+                <% if (kpi.criterion_green) { %>
+                  <option value="<%= kpi.criterion_green %>" <%= (res.valor === kpi.criterion_green) ? 'selected' : '' %>><%= kpi.criterion_green %></option>
+                <% } %>
+              </select>
+            <% } else { %>
+              <input type="text"
+                     class="form-control form-control-sm <%= colorClass %>"
+                     name="valor"
+                     value="<%= res.valor || '' %>"
+                     style="width:85px;"
+                     data-kpi-valor
+                     <%= isLocked ? 'disabled' : '' %>>
+            <% } %>
+            <button type="submit" class="btn btn-sm btn-outline-primary ms-1" title="Guardar" <%= isLocked ? 'disabled' : '' %>>
+              <span>✔</span>
+            </button>
+
+            <!-- Puntaje dentro del semáforo (sin EJS dentro de style para evitar error CSS) -->
+            <span class="badge ms-2 <%= puntaje === '' ? 'd-none' : '' %> <%= (res.color==='rojo') ? 'bg-danger text-light' : (res.color==='amarillo' ? 'bg-warning text-dark' : (res.color==='verde' ? 'bg-success text-light' : 'bg-light text-dark border')) %>"
+                  data-kpi-scorebadge
+                  style="min-width:52px; text-align:center;">
+              <%= puntaje %>
+            </span>
+          </form>
+
+          <div class="d-flex align-items-center flex-wrap gap-1 mt-1">
+            <span class="badge <%= estadoClass %>" data-status-badge><%= estado %></span>
+            <small class="text-muted" data-status-meta>
+              <% if (estado === 'APROBADO') { %>
+                por <strong><%= res.visto_nombre || '—' %></strong> · <%= fmtDate(res.visto_fecha) || '' %>
+              <% } else if (estado === 'EN REVISIÓN') { %>
+                por <strong><%= res.revision_nombre || '—' %></strong> · <%= fmtDate(res.revision_fecha) || '' %>
+                <% if (res.revision_motivo) { %>
+                  <span class="text-muted">· <em><%= res.revision_motivo %></em></span>
+                <% } %>
+              <% } %>
+            </small>
+
+            <% if (canApproveSelf && !isLocked) { %>
+              <button type="button" class="btn btn-sm btn-outline-success ms-2" data-lock-toggle data-action="approve">✅ Aprobar</button>
+            <% } %>
+
+            <% if (isLocked) { %>
+              <span class="badge bg-dark ms-1" data-lock-badge title="Aprobado / cerrado">🔒</span>
+            <% } %>
+          </div>
+        </td>
+
+        <td>
+          <form method="post" action="/dashboard/save" data-kpi-comment-form data-kpi-id="<%= kpi.id %>" class="d-flex gap-1 align-items-start">
+            <input type="hidden" name="kpi_id" value="<%= kpi.id %>">
+            <input type="hidden" name="anio" value="<%= selectedYear %>">
+            <input type="hidden" name="mes" value="<%= selectedMonth %>">
+            <!-- Nota: el comentario se guarda sin forzar el valor del KPI (evita sobrescribir el resultado). -->
+            <textarea name="comentario"
+                      class="form-control form-control-sm"
+                      rows="1"
+                      style="min-width:260px;"
+                      placeholder="Comentario del KPI..."
+                      <%= isLocked ? 'disabled' : '' %>><%= res.comentario || '' %></textarea>
+            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Guardar comentario" <%= isLocked ? 'disabled' : '' %>>💾</button>
+          </form>
+        </td>
+      </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+
+<!-- Retroalimentación del periodo (plegable) -->
+<div class="card mt-3 mb-4">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <div>
+      <strong>Retroalimentación del periodo</strong>
+      <span class="text-muted">(Fortalezas, Áreas de oportunidad, Compromisos)</span>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" type="button" data-toggle-retro data-target="#retro-self">
+      ▸ Desplegar retro
+    </button>
+  </div>
+  <div class="card-body" id="retro-self" style="display:none;">
+    <form method="post" action="/dashboard/feedback/save" data-feedback-form>
+      <input type="hidden" name="anio" value="<%= selectedYear %>">
+      <input type="hidden" name="mes" value="<%= selectedMonth %>">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Fortalezas</label>
+          <textarea name="fortalezas" class="form-control" rows="4" placeholder="Escribe fortalezas..." ><%= (feedback && feedback.fortalezas) || '' %></textarea>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Áreas de oportunidad</label>
+          <textarea name="oportunidades" class="form-control" rows="4" placeholder="Escribe áreas de oportunidad..." ><%= (feedback && feedback.oportunidades) || '' %></textarea>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Compromisos</label>
+          <textarea name="compromisos" class="form-control" rows="4" placeholder="Escribe compromisos..." ><%= (feedback && feedback.compromisos) || '' %></textarea>
+        </div>
+      </div>
+      <div class="mt-3 d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-primary">Guardar retroalimentación</button>
+        <span data-feedback-status class="text-muted small"></span>
+      </div>
+    </form>
+  </div>
+</div>
+
+<hr>
+<div class="d-flex flex-wrap align-items-end justify-content-between gap-2">
+  <div>
+    <h3 class="mb-0">KPIs de mi equipo</h3>
+    <div class="text-muted small">Filtra por No. empleado, nombre o departamento (solo verás a tu jerarquía).</div>
+  </div>
+  <div style="min-width:280px;">
+    <input id="teamFilterInput" type="text" class="form-control form-control-sm" placeholder="Buscar en mi equipo...">
+  </div>
+</div>
+<% if (!subordinateTree || subordinateTree.length === 0) { %>
+  <p>No tienes colaboradores asignados.</p>
+<% } else { %>
+  <% subordinateTree.forEach(node => { %>
+    <%- include('partials/sub_kpi_node', { node: node, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
+  <% }) %>
+<% } %>
+
+<!--
+  Carga bajo demanda (un nivel por click):
+  - El dashboard carga SOLO subordinados directos.
+  - Cada botón "Desplegar siguiente nivel" trae por fetch() el siguiente nivel
+    desde /dashboard/subtree/:empleadoId y lo inserta en el contenedor.
+-->
+<script>
+  (function(){
+    // Robustez: evita "Expression expected" si selectedYear/selectedMonth vienen vacíos
+    // y evita "Cannot redeclare..." usando nombres internos.
+    const _selectedYear  = Number("<%= (selectedYear !== undefined && selectedYear !== null) ? selectedYear : '' %>") || new Date().getFullYear();
+    const _selectedMonth = Number("<%= (selectedMonth !== undefined && selectedMonth !== null) ? selectedMonth : '' %>") || (new Date().getMonth() + 1);
+    const _includeBajas = "<%= _showBajas ? '1' : '0' %>";
+
+    // Filtro rápido de colaboradores (cliente)
+    const teamFilterInput = document.getElementById('teamFilterInput');
+    const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim();
+    function applyTeamFilter(){
+      if (!teamFilterInput) return;
+      const q = norm(teamFilterInput.value);
+      document.querySelectorAll('[data-team-card]').forEach(card => {
+        const hay = norm((card.dataset.empNo||'') + ' ' + (card.dataset.empName||'') + ' ' + (card.dataset.empDept||''));
+        card.style.display = (!q || hay.includes(q)) ? '' : 'none';
+      });
+    }
+    if (teamFilterInput) teamFilterInput.addEventListener('input', applyTeamFilter);
+
+    async function loadNextLevel(empId) {
+      const container = document.getElementById('subtree-' + empId);
+      const btn = document.querySelector(`[data-subtree-btn][data-emp-id="${empId}"]`);
+      if (!container) return;
+
+      // Si ya está cargado, solo alterna visibilidad
+      if (container.dataset.loaded === '1') {
+        const willShow = (container.style.display === 'none' || container.style.display === '');
+        container.style.display = willShow ? 'block' : 'none';
+        if (btn) btn.textContent = willShow ? '▾ Contraer nivel' : '▸ Desplegar nivel';
+        return;
+      }
+
+      // Estado de carga
+      container.style.display = 'block';
+      container.innerHTML = '<div class="text-muted small">Cargando...</div>';
+
+      try {
+        const resp = await fetch(`/dashboard/subtree/${empId}?anio=${_selectedYear}&mes=${_selectedMonth}&showBajas=${_includeBajas}`, {
+          headers: { 'X-Requested-With': 'fetch' }
+        });
+        if (!resp.ok) {
+          const msg = await resp.text();
+          container.innerHTML = `<div class="text-danger small">${msg || 'No se pudo cargar el nivel.'}</div>`;
+          return;
+        }
+        const html = await resp.text();
+        container.innerHTML = html;
+        container.dataset.loaded = '1';
+        if (btn) btn.textContent = '▾ Contraer nivel';
+        applyTeamFilter();
+      } catch (e) {
+        container.innerHTML = '<div class="text-danger small">Error de red al cargar el nivel.</div>';
+      }
+    }
+
+    // Un solo listener por delegación (funciona también para contenido cargado por AJAX)
+    document.addEventListener('click', function(e){
+      const btn = e.target.closest('[data-subtree-btn]');
+      if (!btn) return;
+      e.preventDefault();
+      const empId = btn.dataset.empId;
+      if (!empId) return;
+      loadNextLevel(empId);
+    });
+
+    // Guardado rápido (AJAX) para evitar recargar toda la página al capturar un KPI
+    document.addEventListener('submit', async function(e){
+      const form = e.target;
+      if (!form.matches('form[data-kpi-form]')) return;
+      e.preventDefault();
+
+      const row = form.closest('tr');
+      const input = form.querySelector('[data-kpi-valor]');
+      const btn = form.querySelector('button[type="submit"]');
+      if (btn) btn.disabled = true;
+
+      try {
+        const resp = await fetch(form.action, {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'fetch',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+          },
+          body: new URLSearchParams(new FormData(form)).toString()
+        });
+        const data = await resp.json().catch(()=>({}));
+        if (!resp.ok || (data && data.ok === false)) {
+          if (resp.status === 423 || (data && data.locked)) {
+            alert((data && data.error) || 'Este KPI está cerrado.');
+            return;
+          }
+          throw new Error((data && data.error) || ('HTTP ' + resp.status));
+        }
+
+        // Actualizar color (clases bootstrap) sin recargar
+        if (input && input.dataset.kpiValor !== undefined) {
+          input.classList.remove('bg-danger', 'bg-warning', 'bg-success', 'text-light');
+          if (data && data.color) {
+            if (data.color === 'rojo') input.classList.add('bg-danger', 'text-light');
+            if (data.color === 'amarillo') input.classList.add('bg-warning');
+            if (data.color === 'verde') input.classList.add('bg-success', 'text-light');
+          }
+        }
+
+        // Actualizar puntaje dentro del semáforo (badge)
+        const scoreBadge = row ? row.querySelector('[data-kpi-scorebadge]') : null;
+        if (scoreBadge && data && typeof data.puntaje !== 'undefined') {
+          const p = (data.puntaje === null) ? '' : String(data.puntaje);
+          scoreBadge.textContent = p;
+          scoreBadge.style.display = p ? 'inline-block' : 'none';
+          scoreBadge.classList.remove('bg-danger','bg-warning','bg-success','bg-light','text-dark','text-light','border');
+          if (data.color === 'rojo') scoreBadge.classList.add('bg-danger','text-light');
+          else if (data.color === 'amarillo') scoreBadge.classList.add('bg-warning','text-dark');
+          else if (data.color === 'verde') scoreBadge.classList.add('bg-success','text-light');
+          else scoreBadge.classList.add('bg-light','text-dark','border');
+        }
+      } catch (err) {
+        console.error('Error guardando KPI:', err);
+        if (input) input.classList.add('is-invalid');
+        setTimeout(()=>{ if (input) input.classList.remove('is-invalid'); }, 1200);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // Guardado de comentario (AJAX) sin tocar el semáforo
+    document.addEventListener('submit', async function(e){
+      const form = e.target;
+      if (!form.matches('form[data-kpi-comment-form]')) return;
+      e.preventDefault();
+
+      const btn = form.querySelector('button[type="submit"]');
+      if (btn) btn.disabled = true;
+
+      try {
+        const resp = await fetch(form.action, {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'fetch',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+          },
+          body: new URLSearchParams(new FormData(form)).toString()
+        });
+        const data = await resp.json().catch(()=>({}));
+        if (!resp.ok || (data && data.ok === false)) {
+          throw new Error((data && data.error) || ('HTTP ' + resp.status));
+        }
+        // Feedback visual rápido
+        if (btn) {
+          btn.classList.add('btn-success');
+          setTimeout(()=>btn.classList.remove('btn-success'), 600);
+        }
+      } catch (err) {
+        console.error('Error guardando comentario:', err);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // Mostrar/ocultar retroalimentación (para mí y para el equipo)
+    document.addEventListener('click', function(e){
+      const t = e.target.closest('[data-toggle-retro]');
+      if (!t) return;
+      e.preventDefault();
+      const selector = t.getAttribute('data-target');
+      const panel = selector ? document.querySelector(selector) : null;
+      if (!panel) return;
+      const willShow = (panel.style.display === 'none' || panel.style.display === '');
+      panel.style.display = willShow ? 'block' : 'none';
+      t.textContent = willShow ? '▾ Contraer retro' : '▸ Desplegar retro';
+    });
+
+    // Guardado rápido de retroalimentación (AJAX) por delegación
+    document.addEventListener('submit', async function(e){
+      const form = e.target;
+      if (!form.matches('form[data-feedback-form]')) return;
+      e.preventDefault();
+      const btn = form.querySelector('button[type="submit"]');
+      const status = form.querySelector('[data-feedback-status]');
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = 'Guardando...';
+      try {
+        const resp = await fetch(form.action, {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'fetch',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+          },
+          body: new URLSearchParams(new FormData(form)).toString()
+        });
+        const data = await resp.json().catch(()=>({}));
+        if (!resp.ok || !data.ok) throw new Error((data && data.error) || 'No se pudo guardar');
+        if (status) {
+          status.textContent = 'Guardado ✔';
+          setTimeout(()=>{ status.textContent = ''; }, 1500);
+        }
+      } catch (err) {
+        console.error('Error guardando retroalimentación:', err);
+        if (status) status.textContent = 'Error al guardar';
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+
+    // Aprobar / Enviar a revisión (sin recargar ni brincar de scroll)
+    document.addEventListener('click', async function(e){
+      const btn = e.target.closest('[data-lock-toggle]');
+      if (!btn) return;
+      e.preventDefault();
+      const row = btn.closest('[data-kpi-row]');
+      if (!row) return;
+      const empleadoId = row.dataset.empleadoId;
+      const kpiId = row.dataset.kpiId;
+      const action = btn.dataset.action; // approve | review
+      if (!empleadoId || !kpiId || !action) return;
+
+      const endpoint = (action === 'review') ? '/dashboard/review' : '/dashboard/visto';
+      const fd = new URLSearchParams();
+      fd.set('empleado_id', empleadoId);
+      fd.set('kpi_id', kpiId);
+      fd.set('anio', String(_selectedYear));
+      fd.set('mes', String(_selectedMonth));
+      if (action === 'review') {
+        const motivo = window.prompt('Motivo de revisión (opcional):', '') || '';
+        fd.set('revision_motivo', motivo);
+      }
+
+      btn.disabled = true;
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'X-Requested-With': 'fetch',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+          },
+          body: fd.toString()
+        });
+        const data = await resp.json().catch(()=>({}));
+        if (!resp.ok || !data.ok) throw new Error((data && data.error) || 'No se pudo aplicar');
+
+        const statusBadge = row.querySelector('[data-status-badge]');
+        const statusMeta = row.querySelector('[data-status-meta]');
+
+        if (action === 'approve') {
+          // Deshabilitar inputs
+          row.querySelectorAll('input[name="valor"], select[name="valor"], textarea[name="comentario"], button[type="submit"]').forEach(el => {
+            if (el === btn) return;
+            el.setAttribute('disabled','disabled');
+          });
+
+          // Estado
+          if (statusBadge) {
+            statusBadge.textContent = 'APROBADO';
+            statusBadge.className = 'badge bg-success text-light';
+          }
+          if (statusMeta) {
+            const who = data.visto_nombre || '';
+            const dt = data.visto_fecha ? new Date(data.visto_fecha).toLocaleDateString('es-MX') : '';
+            statusMeta.innerHTML = who ? `por <strong>${who}</strong> · ${dt}` : '';
+          }
+
+          // Candado
+          let lock = row.querySelector('[data-lock-badge]');
+          if (!lock) {
+            lock = document.createElement('span');
+            lock.className = 'badge bg-dark ms-1';
+            lock.setAttribute('data-lock-badge','');
+            lock.title = 'Aprobado / cerrado';
+            lock.textContent = '🔒';
+            const cell = btn.closest('td');
+            if (cell) cell.appendChild(lock);
+          }
+
+          // Mostrar botón "Enviar a revisión" si existe
+          const reviewBtn = row.querySelector('[data-lock-toggle][data-action="review"]');
+          if (reviewBtn) reviewBtn.classList.remove('d-none');
+          btn.classList.add('d-none');
+        } else {
+          // review
+          // Habilitar inputs
+          row.querySelectorAll('input[name="valor"], select[name="valor"], textarea[name="comentario"], button[type="submit"]').forEach(el => {
+            if (el === btn) return;
+            el.removeAttribute('disabled');
+          });
+
+          // Estado
+          if (statusBadge) {
+            statusBadge.textContent = 'EN REVISIÓN';
+            statusBadge.className = 'badge bg-warning text-dark';
+          }
+          if (statusMeta) {
+            const who = data.revision_nombre || '';
+            const dt = data.revision_fecha ? new Date(data.revision_fecha).toLocaleDateString('es-MX') : '';
+            const motivo = data.revision_motivo ? ` · <em>${data.revision_motivo}</em>` : '';
+            statusMeta.innerHTML = who ? `por <strong>${who}</strong> · ${dt}${motivo}` : '';
+          }
+
+          // Quitar candado
+          const lock = row.querySelector('[data-lock-badge]');
+          if (lock) lock.remove();
+
+          // Mostrar botón aprobar si permitido (data-can-approve)
+          const approveBtn = row.querySelector('[data-lock-toggle][data-action="approve"]');
+          if (approveBtn && row.dataset.canApprove === '1') approveBtn.classList.remove('d-none');
+          btn.classList.add('d-none');
+        }
+
+      } catch (err) {
+        console.error('Error aprobación/revisión:', err);
+        alert(err.message || 'No se pudo aplicar');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  })();
+</script>
+
+<%- include('partials/footer') %>

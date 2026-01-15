@@ -1,0 +1,28 @@
+<%- include('partials/header') %>
+
+<div class="login-branding">
+  <img src="/logo/logo.png" alt="KPI Manager CHC" class="login-logo">
+  <h1 class="login-title">KPI Manager CHC</h1>
+  <div class="version">Versión Alpha 0.7</div>
+</div>
+<div class="row justify-content-center">
+  <div class="col-md-5 col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-body p-4">
+    <h2 class="mb-3">Acceso al sistema</h2>
+    <form method="post" action="/login">
+      <div class="mb-3">
+        <label for="username" class="form-label">Usuario</label>
+        <input type="text" class="form-control" id="username" name="username" required>
+      </div>
+      <div class="mb-3">
+        <label for="password" class="form-label">Contraseña</label>
+        <input type="password" class="form-control" id="password" name="password" required>
+      </div>
+      <button type="submit" class="btn btn-primary">Iniciar sesión</button>
+    </form>
+      </div>
+    </div>
+  </div>
+</div>
+<%- include('partials/footer') %>

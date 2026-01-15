@@ -1,0 +1,700 @@
+<%- include('partials/header') %>
+<h2 class="mb-4">Gestión de KPIs</h2>
+
+<h3>Crear un nuevo KPI</h3>
+<form method="post" action="/kpis/create" class="row g-3 mb-5" id="createKpiForm">
+  <div class="col-md-4">
+    <label class="form-label">Nombre del KPI</label>
+    <input type="text" class="form-control" name="nombre" required>
+  </div>
+  <div class="col-md-4">
+    <label class="form-label">Objetivo</label>
+    <input type="text" class="form-control" name="objetivo">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">Unidad</label>
+    <select name="unidad" class="form-select">
+      <option value="numero">Número</option>
+      <option value="porcentaje">Porcentaje</option>
+      <option value="texto">Criterio (selección)</option>
+    </select>
+  </div>
+
+  <div class="col-md-2">
+    <label class="form-label">Departamento</label>
+    <select name="departamento_id" class="form-select" required>
+      <% departamentos.forEach(dep => { %>
+        <option value="<%= dep.id %>"><%= dep.nombre %></option>
+      <% }) %>
+    </select>
+  </div>
+
+  <div class="col-md-2">
+    <label class="form-label">Tipo de calificación</label>
+    <select name="score_type" class="form-select" data-score-type>
+      <option value="PERCENT" selected>Porcentaje (cumplimiento)</option>
+      <option value="NUMBER">Número (cantidad)</option>
+      <option value="CRITERION">Criterio (texto)</option>
+    </select>
+  </div>
+  <div class="col-md-2" data-direction-wrap>
+    <label class="form-label">Sentido</label>
+    <select name="direction" class="form-select">
+      <option value="HIGHER_BETTER" selected title="↑ más es mejor">↑</option>
+      <option value="LOWER_BETTER" title="↓ menos es mejor">↓</option>
+    </select>
+  </div>
+  <div class="col-md-2" data-threshold-wrap>
+    <label class="form-label">Umbral Amarillo</label>
+    <input type="number" step="0.01" class="form-control" name="threshold_yellow" placeholder="Ej. 90">
+  </div>
+  <div class="col-md-2" data-threshold-wrap>
+    <label class="form-label">Umbral Verde</label>
+    <input type="number" step="0.01" class="form-control" name="threshold_green" placeholder="Ej. 95">
+  </div>
+  <div class="col-md-4" data-criterion-wrap style="display:none;">
+    <label class="form-label">Criterios (R / A / V)</label>
+    <div class="input-group">
+      <input type="text" class="form-control" name="criterion_red" placeholder="Rojo">
+      <input type="text" class="form-control" name="criterion_yellow" placeholder="Amarillo">
+      <input type="text" class="form-control" name="criterion_green" placeholder="Verde">
+    </div>
+  </div>
+  <div class="col-12">
+    <div class="alert alert-secondary py-2 small mb-2">
+      <strong>Modelo nuevo:</strong> define <u>umbrales</u> para Amarillo y Verde (y el Rojo se infiere).
+      Para KPIs tipo <strong>Criterio</strong>, define los 3 textos.
+    </div>
+  </div>
+  <details class="col-12">
+    <summary class="small text-muted">Campos legacy (opcional) - ya no se usan para el semáforo</summary>
+    <div class="row g-2 mt-1">
+      <div class="col-md-2">
+        <label class="form-label">Rojo mín</label>
+        <input type="number" step="any" class="form-control" name="rojo_min">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Rojo máx</label>
+        <input type="number" step="any" class="form-control" name="rojo_max">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Amarillo mín</label>
+        <input type="number" step="any" class="form-control" name="amarillo_min">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Amarillo máx</label>
+        <input type="number" step="any" class="form-control" name="amarillo_max">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Verde mín</label>
+        <input type="number" step="any" class="form-control" name="verde_min">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Verde máx</label>
+        <input type="number" step="any" class="form-control" name="verde_max">
+      </div>
+    </div>
+  </details>
+  <div class="col-12">
+    <button type="submit" class="btn btn-success">Crear KPI</button>
+  </div>
+</form>
+
+<hr>
+
+<h3>KPIs existentes</h3>
+
+<div class="alert alert-info py-2 small mb-3">
+  <i class="bi bi-lock-fill"></i>
+  Los KPIs están <strong>bloqueados</strong> por defecto. Da clic en <strong><i class="bi bi-pencil-square"></i> Editar</strong>
+  para habilitar cambios; <strong>Guardar</strong> solo se activa si realmente modificaste algo.
+</div>
+
+<!-- Filtro por departamento -->
+<form method="GET" action="/kpis" class="row row-cols-lg-auto g-3 align-items-end mb-3">
+  <div class="col-12">
+    <label class="form-label mb-0">Buscar KPI</label>
+    <input type="text" name="q" class="form-control" placeholder="Nombre del KPI..." value="<%= (typeof search !== 'undefined' ? search : '') %>">
+  </div>
+  <div class="col-12">
+    <label class="form-label mb-0">Filtrar por departamento</label>
+    <select name="departamento_id" class="form-select">
+      <option value="all" <%= (!selectedDepartamento || String(selectedDepartamento) === 'all') ? 'selected' : '' %>>(Todos)</option>
+      <% departamentos.forEach(d => { %>
+        <option value="<%= d.id %>" <%= (selectedDepartamento && String(selectedDepartamento) === String(d.id)) ? 'selected' : '' %>><%= d.nombre %></option>
+      <% }) %>
+    </select>
+  </div>
+  <div class="col-12">
+    <button class="btn btn-primary">Aplicar</button>
+  </div>
+</form>
+
+
+
+<style>
+  /* Catálogo de KPIs: filas más altas y campos multi-línea */
+  .kpi-table td { vertical-align: middle; }
+  .kpi-name,
+  .kpi-obj { min-height: 3.2rem; line-height: 1.2; }
+  .kpi-locked input,
+  .kpi-locked textarea,
+  .kpi-locked select {
+    background: #f1f3f5;
+  }
+  .kpi-actions .btn { min-width: 105px; }
+  .kpi-row-badge { font-size: .75rem; }
+  .col-nombre { min-width: 320px; }
+  .col-objetivo { min-width: 280px; }
+  /* (Unidad/Tipo/Dirección ahora viven dentro de la columna Calificación) */
+  .kpi-name, .kpi-obj { min-height: 4.2rem; resize: vertical; font-size: .95rem; line-height: 1.2; }
+  /* Aseguramos ancho suficiente para que la columna de Acciones no tape columnas vecinas */
+  .kpi-actions { min-width: 260px; }
+
+  /* Mantener acciones visibles aunque la tabla sea ancha */
+  th.sticky-actions,
+  td.sticky-actions {
+    position: sticky;
+    right: 0;
+    z-index: 3;
+    background: #fff;
+    min-width: 260px;
+    border-left: 1px solid #dee2e6;
+  }
+  thead th.sticky-actions { z-index: 4; background: #f8f9fa; }
+
+  /* Nota: NO fijamos Departamento (sticky) porque puede "tapar" la columna de Calificación
+     en pantallas donde no hay scroll horizontal. Dejamos solo Acciones sticky. */
+
+  /* Pequeña ayuda visual para scroll horizontal */
+  .table-hscroll-hint {
+    font-size: .85rem;
+    color: #6c757d;
+  }
+
+  /* Columna de calificación más legible */
+  /* Evita que los títulos se "apachurren": damos un ancho mínimo a la tabla y permitimos scroll horizontal */
+  .kpi-table-wrap table { min-width: 980px; }
+
+  .kpi-calif-cell { min-width: 520px; }
+  .kpi-calif-summary { font-size: .85rem; line-height: 1.15; }
+  .kpi-calif-summary .badge { margin-right: .25rem; }
+
+  /* Departamento: lectura clara (se muestra dentro de Acciones para que siempre sea visible) */
+  .kpi-dept-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .35rem .55rem;
+    border: 1px solid #e9ecef;
+    border-radius: .5rem;
+    background: #f8f9fa;
+    font-size: .9rem;
+    line-height: 1.1;
+  }
+
+  /* Inputs más claros en umbrales/criterios */
+  .kpi-threshold-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+    gap: .5rem;
+  }
+  .kpi-threshold-grid .form-control { width: 100%; }
+  .kpi-criteria .form-control { min-width: 140px; }
+
+  /* Mejor lectura de encabezados */
+  thead th { white-space: nowrap; }
+
+  /* Anclas: que el scroll caiga con margen agradable */
+  tr[id^="kpi-"] { scroll-margin-top: 80px; }
+
+</style>
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <div class="table-hscroll-hint">
+    <i class="bi bi-arrows-move"></i> Si no ves todas las columnas, desliza horizontalmente.
+  </div>
+</div>
+
+<div class="table-responsive kpi-table-wrap">
+  <table class="table table-bordered table-striped align-middle">
+    <thead class="table-light">
+      <tr>
+        <th>#</th>
+        <th>Nombre</th>
+        <th>Objetivo</th>
+        <th class="kpi-calif-cell">Calificación (unidad / tipo / dirección / umbrales)</th>
+        <th class="sticky-actions">Acciones / Departamento</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% kpis.forEach((kpi, idx) => {
+        const depSel = kpi.departamento_id;
+        const original = {
+          nombre: kpi.nombre || '',
+          objetivo: kpi.objetivo || '',
+          unidad: kpi.unidad || 'numero',
+          score_type: kpi.score_type || 'PERCENT',
+          direction: kpi.direction || 'HIGHER_BETTER',
+          threshold_yellow: String(kpi.threshold_yellow ?? ''),
+          threshold_green: String(kpi.threshold_green ?? ''),
+          criterion_red: kpi.criterion_red || '',
+          criterion_yellow: kpi.criterion_yellow || '',
+          criterion_green: kpi.criterion_green || '',
+          rojo_min: String(kpi.rojo_min ?? ''),
+          rojo_max: String(kpi.rojo_max ?? ''),
+          amarillo_min: String(kpi.amarillo_min ?? ''),
+          amarillo_max: String(kpi.amarillo_max ?? ''),
+          verde_min: String(kpi.verde_min ?? ''),
+          verde_max: String(kpi.verde_max ?? ''),
+          departamento_id: String(depSel ?? '')
+        };
+        const formId = `kpi-form-${kpi.id}`;
+      %>
+        <tr id="kpi-<%= kpi.id %>" class="kpi-row kpi-locked" data-kpi-id="<%= kpi.id %>" data-form-id="<%= formId %>">
+          <td class="col-idx"><%= idx + 1 %></td>
+
+          <td class="col-nombre">
+            <textarea form="<%= formId %>" name="nombre" rows="2" class="form-control form-control-sm kpi-text kpi-textarea-lg" required readonly><%= kpi.nombre %></textarea>
+          </td>
+
+          <td class="col-objetivo">
+            <textarea form="<%= formId %>" name="objetivo" rows="2" class="form-control form-control-sm kpi-text kpi-textarea-lg" readonly><%= kpi.objetivo || '' %></textarea>
+          </td>
+
+          <td class="kpi-calif-cell">
+            <!-- Configuración visible SOLO al editar: unidad / tipo / dirección -->
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-1 kpi-calif-config" data-calif-config style="display:none;">
+              <div>
+                <label class="form-label small mb-0">Unidad</label>
+                <select form="<%= formId %>" name="unidad" class="form-select form-select-sm" disabled>
+                  <option value="numero" <%= kpi.unidad === 'numero' ? 'selected' : '' %>>Número</option>
+                  <option value="porcentaje" <%= kpi.unidad === 'porcentaje' ? 'selected' : '' %>>Porcentaje</option>
+                  <option value="texto" <%= kpi.unidad === 'texto' ? 'selected' : '' %>>Criterio (selección)</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label small mb-0">Tipo</label>
+                <select form="<%= formId %>" name="score_type" class="form-select form-select-sm" disabled>
+                  <option value="PERCENT" <%= (kpi.score_type === 'PERCENT' || !kpi.score_type) ? 'selected' : '' %>>Porcentaje</option>
+                  <option value="NUMBER" <%= kpi.score_type === 'NUMBER' ? 'selected' : '' %>>Número</option>
+                  <option value="CRITERION" <%= kpi.score_type === 'CRITERION' ? 'selected' : '' %>>Criterio</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="form-label small mb-0">Dirección</label>
+                <% if (kpi.score_type === 'CRITERION') { %>
+                  <select form="<%= formId %>" name="direction" class="form-select form-select-sm" disabled>
+                    <option value="HIGHER_BETTER" selected>No aplica</option>
+                  </select>
+                <% } else { %>
+                  <select form="<%= formId %>" name="direction" class="form-select form-select-sm" disabled>
+                    <option value="HIGHER_BETTER" <%= (kpi.direction === 'HIGHER_BETTER' || !kpi.direction) ? 'selected' : '' %>>↑ Más es mejor</option>
+                    <option value="LOWER_BETTER" <%= kpi.direction === 'LOWER_BETTER' ? 'selected' : '' %>>↓ Menos es mejor</option>
+                  </select>
+                <% } %>
+              </div>
+            </div>
+            <!-- Resumen siempre visible (modo bloqueado) -->
+            <div class="kpi-calif-summary" data-calif-summary>
+              <% if (kpi.score_type === 'CRITERION') { %>
+                <% if (!kpi.criterion_red && !kpi.criterion_yellow && !kpi.criterion_green) { %>
+                  <span class="text-muted">Sin criterios definidos</span>
+                <% } else { %>
+                  <span class="badge text-bg-danger">R</span><%= kpi.criterion_red || '' %>
+                  <span class="badge text-bg-warning">A</span><%= kpi.criterion_yellow || '' %>
+                  <span class="badge text-bg-success">V</span><%= kpi.criterion_green || '' %>
+                <% } %>
+              <% } else { %>
+                <% const y = kpi.threshold_yellow; const g = kpi.threshold_green; const down = (kpi.direction === 'LOWER_BETTER'); %>
+                <% const yMissing = (y === null || y === undefined || y === '');
+                   const gMissing = (g === null || g === undefined || g === ''); %>
+                <% if (yMissing && gMissing) { %>
+                  <span class="text-muted">Sin umbrales definidos (define Amarillo y Verde)</span>
+                <% } else if (!yMissing && gMissing) { %>
+                  <span class="text-muted">Falta Umbral <strong>Verde</strong> (Amarillo: <%= y %>)</span>
+                <% } else if (yMissing && !gMissing) { %>
+                  <span class="text-muted">Falta Umbral <strong>Amarillo</strong> (Verde: <%= g %>)</span>
+                <% } else { %>
+                  <% if (!down) { %>
+                    <span class="badge text-bg-danger">R</span> &lt; <%= y %>
+                    <span class="badge text-bg-warning">A</span> <%= y %> – <%= g %>
+                    <span class="badge text-bg-success">V</span> ≥ <%= g %>
+                  <% } else { %>
+                    <span class="badge text-bg-success">V</span> ≤ <%= g %>
+                    <span class="badge text-bg-warning">A</span> <%= g %> – <%= y %>
+                    <span class="badge text-bg-danger">R</span> &gt; <%= y %>
+                  <% } %>
+                  <span class="text-muted ms-1">(<%= down ? '↓ Menos es mejor' : '↑ Más es mejor' %>)</span>
+                <% } %>
+              <% } %>
+            </div>
+
+            <div class="kpi-rule-preview small text-muted mt-1" data-rule-preview style="display:none;"></div>
+
+            <!-- Umbrales: solo cuando el KPI sea NUMBER/PERCENT (se muestra al editar) -->
+            <div class="mt-2 kpi-thresholds" data-thresholds-wrap style="display:none;">
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label small mb-1">Umbral Amarillo <span class="text-muted">(mínimo aceptable / máximo tolerable)</span></label>
+                  <input form="<%= formId %>" type="number" step="0.01" name="threshold_yellow" value="<%= kpi.threshold_yellow ?? '' %>" class="form-control form-control-sm" placeholder="Ej. 90" disabled>
+                </div>
+                <div class="col-12">
+                  <label class="form-label small mb-1">Umbral Verde <span class="text-muted">(mínimo óptimo / máximo óptimo)</span></label>
+                  <input form="<%= formId %>" type="number" step="0.01" name="threshold_green" value="<%= kpi.threshold_green ?? '' %>" class="form-control form-control-sm" placeholder="Ej. 95" disabled>
+                </div>
+              </div>
+              <div class="small text-muted mt-1">
+                <i class="bi bi-info-circle"></i> El <strong>Rojo</strong> se infiere automáticamente según la <strong>Dirección</strong>.
+              </div>
+            </div>
+
+            <!-- Criterios: solo cuando el KPI sea CRITERION (se muestra al editar) -->
+            <div class="input-group input-group-sm mt-1 kpi-criteria" data-criteria-wrap style="display:none;">
+              <input form="<%= formId %>" type="text" name="criterion_red" value="<%= kpi.criterion_red ?? '' %>" class="form-control" placeholder="Rojo" disabled>
+              <input form="<%= formId %>" type="text" name="criterion_yellow" value="<%= kpi.criterion_yellow ?? '' %>" class="form-control" placeholder="Amarillo" disabled>
+              <input form="<%= formId %>" type="text" name="criterion_green" value="<%= kpi.criterion_green ?? '' %>" class="form-control" placeholder="Verde" disabled>
+            </div>
+
+            <!-- Legacy oculto: por si necesitas consultarlo durante la transición -->
+            <details class="mt-2 small text-muted kpi-legacy-wrap" data-legacy-wrap style="display:none;">
+              <summary>Avanzado (legacy)</summary>
+              <div class="row g-2 mt-1">
+                <div class="col-12">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">Rojo</span>
+                    <input form="<%= formId %>" type="number" step="0.01" name="rojo_min" value="<%= kpi.rojo_min %>" class="form-control" placeholder="Mín" disabled>
+                    <input form="<%= formId %>" type="number" step="0.01" name="rojo_max" value="<%= kpi.rojo_max %>" class="form-control" placeholder="Máx" disabled>
+                  </div>
+                </div>
+                <div class="col-12">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">Amarillo</span>
+                    <input form="<%= formId %>" type="number" step="0.01" name="amarillo_min" value="<%= kpi.amarillo_min %>" class="form-control" placeholder="Mín" disabled>
+                    <input form="<%= formId %>" type="number" step="0.01" name="amarillo_max" value="<%= kpi.amarillo_max %>" class="form-control" placeholder="Máx" disabled>
+                  </div>
+                </div>
+                <div class="col-12">
+                  <div class="input-group input-group-sm">
+                    <span class="input-group-text">Verde</span>
+                    <input form="<%= formId %>" type="number" step="0.01" name="verde_min" value="<%= kpi.verde_min %>" class="form-control" placeholder="Mín" disabled>
+                    <input form="<%= formId %>" type="number" step="0.01" name="verde_max" value="<%= kpi.verde_max %>" class="form-control" placeholder="Máx" disabled>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </td>
+
+          <td class="kpi-actions sticky-actions">
+            <!-- Form vacío: los campos se asocian vía atributo form="..." para evitar problemas de DOM dentro de <tr> -->
+            <form id="<%= formId %>" class="kpi-row-form" method="post" action="/kpis/update/<%= kpi.id %>" data-original="<%= encodeURIComponent(JSON.stringify(original)) %>">
+              <!-- Para regresar al mismo lugar tras guardar (se rellena via JS) -->
+              <input type="hidden" name="return_to" value="">
+            </form>
+
+            <!-- Departamento siempre visible (en Acciones para no perderlo por ancho de tabla) -->
+            <div class="mb-2">
+              <div class="kpi-dept-summary" data-dept-summary>
+                <i class="bi bi-building"></i>
+                <span><%= kpi.departamento_nombre || 'Sin departamento' %></span>
+              </div>
+              <div data-dept-edit style="display:none;" class="mt-2">
+                <label class="form-label small mb-1">Departamento</label>
+                <select form="<%= formId %>" name="departamento_id" class="form-select form-select-sm" disabled>
+                  <% departamentos.forEach(dep => { %>
+                    <option value="<%= dep.id %>" <%= String(dep.id) === String(depSel) ? 'selected' : '' %>><%= dep.nombre %></option>
+                  <% }) %>
+                </select>
+              </div>
+            </div>
+
+            <div class="d-flex flex-column gap-2">
+              <button type="button" class="btn btn-outline-secondary btn-sm btn-edit">✏️ Editar</button>
+              <button type="submit" class="btn btn-primary btn-sm btn-save" form="<%= formId %>" disabled>Guardar</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm btn-cancel d-none">Cancelar</button>
+              <span class="badge bg-warning text-dark text-center kpi-row-badge d-none">Editando (sin cambios)</span>
+            </div>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+
+  </table>
+</div>
+
+<script>
+  (() => {
+    // --- Crear KPI: toggles para el nuevo modelo ---
+    const createForm = document.getElementById('createKpiForm');
+    if (createForm) {
+      const scoreTypeSel = createForm.querySelector('select[data-score-type]');
+      const dirWrap = createForm.querySelector('[data-direction-wrap]');
+      const thrWraps = createForm.querySelectorAll('[data-threshold-wrap]');
+      const critWrap = createForm.querySelector('[data-criterion-wrap]');
+      const unidadSel = createForm.querySelector('select[name="unidad"]');
+
+      const syncCreateUi = () => {
+        const st = scoreTypeSel ? scoreTypeSel.value : 'PERCENT';
+        const isCrit = st === 'CRITERION';
+        // Mostrar/ocultar
+        if (dirWrap) dirWrap.style.display = isCrit ? 'none' : '';
+        thrWraps.forEach(w => w.style.display = isCrit ? 'none' : '');
+        if (critWrap) critWrap.style.display = isCrit ? '' : 'none';
+        // Sugerir unidad
+        if (unidadSel) {
+          if (st === 'PERCENT') unidadSel.value = 'porcentaje';
+          if (st === 'NUMBER') unidadSel.value = 'numero';
+          if (st === 'CRITERION') unidadSel.value = 'texto';
+        }
+      };
+      scoreTypeSel?.addEventListener('change', syncCreateUi);
+      syncCreateUi();
+    }
+
+    const decodeOriginal = (form) => {
+      try {
+        return JSON.parse(decodeURIComponent(form.dataset.original || '%7B%7D'));
+      } catch (e) {
+        return {};
+      }
+    };
+
+    const getCurrent = (row) => {
+      const obj = {};
+      row.querySelectorAll('input[name], select[name], textarea[name]').forEach(el => {
+        obj[el.name] = (el.value ?? '').toString();
+      });
+      return obj;
+    };
+
+    const setValue = (row, data) => {
+      Object.entries(data || {}).forEach(([k, v]) => {
+        const el = row.querySelector(`[name="${CSS.escape(k)}"]`);
+        if (el) el.value = (v ?? '').toString();
+      });
+    };
+
+    const isDifferent = (a, b) => {
+      const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+      for (const k of keys) {
+        if ((a?.[k] ?? '').toString() !== (b?.[k] ?? '').toString()) return true;
+      }
+      return false;
+    };
+
+    const applyPercentageRules = (row) => {
+      const unidad = row.querySelector('select[name="unidad"]')?.value;
+      const isPct = unidad === 'porcentaje';
+
+      const nums = row.querySelectorAll(
+        'input[type="number"][name$="_min"], input[type="number"][name$="_max"], input[type="number"][name="threshold_yellow"], input[type="number"][name="threshold_green"]'
+      );
+      nums.forEach(inp => {
+        if (isPct) {
+          inp.max = '100';
+          const n = parseFloat(inp.value);
+          if (!Number.isNaN(n) && n > 100) inp.value = '100.00';
+        } else {
+          inp.removeAttribute('max');
+        }
+      });
+    };
+
+    document.querySelectorAll('tr.kpi-row').forEach(row => {
+      const form = row.querySelector('form.kpi-row-form');
+      if (!form) return;
+
+      const original = decodeOriginal(form);
+      const editBtn = row.querySelector('.btn-edit');
+      const cancelBtn = row.querySelector('.btn-cancel');
+      const saveBtn = row.querySelector('.btn-save');
+      const status = row.querySelector('.kpi-row-badge');
+      const controls = row.querySelectorAll('input, select, textarea');
+
+      // UI dinámico por tipo de calificación
+      const scoreTypeSel = row.querySelector('select[name="score_type"]');
+      const dirSel = row.querySelector('select[name="direction"]');
+      const configWrap = row.querySelector('[data-calif-config]');
+      const summaryEl = row.querySelector('[data-calif-summary]');
+      const thresholdsWrap = row.querySelector('[data-thresholds-wrap]');
+      const criteriaWrap = row.querySelector('[data-criteria-wrap]');
+      const legacyWrap = row.querySelector('[data-legacy-wrap]');
+      const rulePreviewEl = row.querySelector('[data-rule-preview]');
+      const deptSummary = row.querySelector('[data-dept-summary]');
+      const deptEditWrap = row.querySelector('[data-dept-edit]');
+
+      const updateRulePreview = () => {
+        if (!rulePreviewEl) return;
+        const st = (scoreTypeSel?.value || 'PERCENT');
+        const isCrit = st === 'CRITERION';
+        const isEditing = row.classList.contains('kpi-editing');
+        if (!isEditing) {
+          rulePreviewEl.style.display = 'none';
+          return;
+        }
+        if (isCrit) {
+          rulePreviewEl.innerHTML = '<span class="badge text-bg-danger">R</span> ' +
+            'No cumple  <span class="badge text-bg-warning">A</span> Cumple  ' +
+            '<span class="badge text-bg-success">V</span> Excede';
+          rulePreviewEl.style.display = '';
+          return;
+        }
+        const y = row.querySelector('input[name="threshold_yellow"]')?.value;
+        const g = row.querySelector('input[name="threshold_green"]')?.value;
+        const dir = row.querySelector('select[name="direction"]')?.value || 'HIGHER_BETTER';
+        if (!y || !g) {
+          rulePreviewEl.textContent = 'Define Umbral Amarillo (mínimo aceptable) y Umbral Verde (mínimo óptimo). El rojo se infiere.';
+          rulePreviewEl.style.display = '';
+          return;
+        }
+        const down = dir === 'LOWER_BETTER';
+        if (!down) {
+          rulePreviewEl.innerHTML = `<span class="badge text-bg-danger">R</span> &lt; ${y}  <span class="badge text-bg-warning">A</span> ${y} – ${g}  <span class="badge text-bg-success">V</span> ≥ ${g}`;
+        } else {
+          rulePreviewEl.innerHTML = `<span class="badge text-bg-success">V</span> ≤ ${g}  <span class="badge text-bg-warning">A</span> ${g} – ${y}  <span class="badge text-bg-danger">R</span> &gt; ${y}`;
+        }
+        rulePreviewEl.style.display = '';
+      };
+
+      const syncRowCalifUi = () => {
+        const st = (scoreTypeSel?.value || 'PERCENT');
+        const isCrit = st === 'CRITERION';
+        const isEditing = row.classList.contains('kpi-editing');
+
+        // En bloqueado mostramos resumen; en edición mostramos configuración + solo los campos relevantes
+        if (configWrap) configWrap.style.display = isEditing ? '' : 'none';
+        if (summaryEl) summaryEl.style.display = isEditing ? 'none' : '';
+        if (thresholdsWrap) thresholdsWrap.style.display = (!isCrit && isEditing) ? '' : 'none';
+        if (criteriaWrap) criteriaWrap.style.display = (isCrit && isEditing) ? '' : 'none';
+        if (legacyWrap) legacyWrap.style.display = isEditing ? '' : 'none';
+
+        // Departamento: en bloqueado mostramos texto; en edición mostramos selector
+        if (deptSummary) deptSummary.style.display = isEditing ? 'none' : '';
+        if (deptEditWrap) deptEditWrap.style.display = isEditing ? '' : 'none';
+
+        updateRulePreview();
+
+        // Dirección no aplica a criterio
+        if (dirSel) {
+          if (isCrit) {
+            dirSel.value = 'HIGHER_BETTER';
+            dirSel.setAttribute('disabled', 'disabled');
+          } else if (isEditing) {
+            dirSel.removeAttribute('disabled');
+          }
+        }
+      };
+
+      const lock = () => {
+        row.classList.add('kpi-locked');
+        row.classList.remove('kpi-editing');
+
+        // Restaurar valores originales
+        setValue(row, original);
+
+        // Bloquear campos
+        controls.forEach(el => {
+          if (el.tagName === 'TEXTAREA') {
+            el.setAttribute('readonly', 'readonly');
+          } else {
+            el.setAttribute('disabled', 'disabled');
+          }
+        });
+
+        saveBtn.disabled = true;
+        cancelBtn.classList.add('d-none');
+        editBtn.classList.remove('d-none');
+        status.className = 'badge text-bg-secondary kpi-row-badge';
+        status.innerHTML = '<i class="bi bi-lock-fill"></i> Bloqueado';
+
+        syncRowCalifUi();
+      };
+
+      const unlock = () => {
+        row.classList.remove('kpi-locked');
+        row.classList.add('kpi-editing');
+
+        controls.forEach(el => {
+          el.removeAttribute('disabled');
+          el.removeAttribute('readonly');
+        });
+
+        applyPercentageRules(row);
+
+        // Actualiza vista previa de reglas cuando cambian campos relevantes
+        row.querySelectorAll('input[name="threshold_yellow"], input[name="threshold_green"], select[name="direction"], select[name="score_type"]').forEach(el => {
+          el.addEventListener('input', updateRulePreview);
+          el.addEventListener('change', () => { syncRowCalifUi(); updateRulePreview(); });
+        });
+
+        syncRowCalifUi();
+        updateRulePreview();
+
+        cancelBtn.classList.remove('d-none');
+        editBtn.classList.add('d-none');
+        status.className = 'badge text-bg-warning kpi-row-badge';
+        status.innerHTML = '<i class="bi bi-pencil-square"></i> Editando';
+        saveBtn.disabled = true;
+      };
+
+      const updateSaveState = () => {
+        applyPercentageRules(row);
+        syncRowCalifUi();
+        const current = getCurrent(row);
+        const changed = isDifferent(current, original);
+        saveBtn.disabled = !changed;
+        if (row.classList.contains('kpi-editing')) {
+          if (changed) {
+            status.className = 'badge text-bg-success kpi-row-badge';
+            status.innerHTML = '<i class="bi bi-exclamation-circle"></i> Cambios listos';
+          } else {
+            status.className = 'badge text-bg-warning kpi-row-badge';
+            status.innerHTML = '<i class="bi bi-pencil-square"></i> Editando';
+          }
+        }
+      };
+
+      // Inicialmente bloqueado
+      lock();
+
+      editBtn?.addEventListener('click', () => unlock());
+      cancelBtn?.addEventListener('click', () => lock());
+
+      row.addEventListener('input', updateSaveState);
+      row.addEventListener('change', updateSaveState);
+
+      scoreTypeSel?.addEventListener('change', () => {
+        // Sugerir unidad coherente cuando se edita el tipo
+        const unidadSel = row.querySelector('select[name="unidad"]');
+        if (unidadSel && row.classList.contains('kpi-editing')) {
+          if (scoreTypeSel.value === 'PERCENT') unidadSel.value = 'porcentaje';
+          if (scoreTypeSel.value === 'NUMBER') unidadSel.value = 'numero';
+          if (scoreTypeSel.value === 'CRITERION') unidadSel.value = 'texto';
+        }
+        updateSaveState();
+      });
+
+      form.addEventListener('submit', (e) => {
+        const hasChanges = !saveBtn.disabled;
+        if (!hasChanges) {
+          e.preventDefault();
+          return;
+        }
+        // Guardar un "return_to" para volver exactamente a la fila (con filtro actual)
+        const ret = form.querySelector('input[name="return_to"]');
+        if (ret) {
+          const kpiId = row.dataset.kpiId || row.getAttribute('data-kpi-id');
+          ret.value = `${window.location.pathname}${window.location.search}#kpi-${kpiId}`;
+        }
+        if (!confirm('¿Guardar los cambios de este KPI?')) {
+          e.preventDefault();
+          return;
+        }
+      });
+    });
+
+  })();
+</script>
+
+<%- include('partials/footer') %>

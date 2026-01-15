@@ -1,0 +1,59 @@
+<%- include('partials/header') %>
+
+<h2 class="mb-4">Organigrama</h2>
+<p class="text-muted">Generado dinámicamente a partir de la relación de puestos (<em>responde a</em>). Si actualizas la tabla de puestos, el organigrama cambia automáticamente.</p>
+
+<div class="org-wrapper">
+  <!-- Se inserta HTML del organigrama generado en el controlador -->
+  <%- treeHtml %>
+</div>
+
+<style>
+.org-wrapper{
+  overflow-x:auto;
+  padding-bottom: 1rem;
+  /* Centrar el organigrama. Se utiliza flexbox para alinear horizontalmente el árbol.
+     Esto permite que el puesto de Dirección aparezca centrado en la parte superior. */
+  display:flex;
+  justify-content:center;
+}
+.org-list,
+.org-list ul{
+  list-style:none;
+  margin:0;
+  padding-left:1.25rem;
+  position:relative;
+}
+.org-list li{position:relative; padding:0.25rem 0 0.25rem 0.75rem;}
+.org-list li::before{
+  content:'';
+  position:absolute;
+  top:0.9rem;
+  left:0;
+  width:0.75rem;
+  height:0;
+  border-top:1px solid #cfcfcf;
+}
+.org-list li::after{
+  content:'';
+  position:absolute;
+  top:0;
+  left:0;
+  width:0;
+  height:100%;
+  border-left:1px solid #cfcfcf;
+}
+.org-list > li::after{top:0.9rem;}
+.org-list li:last-child::after{height:0.9rem;}
+.org-card{
+  background:#fff;
+  border:1px solid #e6e6e6;
+  border-radius:12px;
+  padding:0.5rem 0.75rem;
+  display:inline-block;
+  box-shadow:0 1px 2px rgba(0,0,0,0.04);
+  min-width: 220px;
+}
+</style>
+
+<%- include('partials/footer') %>

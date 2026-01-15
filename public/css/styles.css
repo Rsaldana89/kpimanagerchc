@@ -1,0 +1,102 @@
+/*
+ * Estilos personalizados para el sistema de KPIs.  Utiliza colores
+ * sobrios y acordes a un ambiente corporativo.  Bootstrap se
+ * encarga de la mayor parte del estilo; aquí solo se afinan
+ * algunos detalles.
+ */
+
+body {
+  background-color: #f8f9fa;
+}
+
+.table td,
+.table th {
+  vertical-align: middle;
+}
+
+/* Colores de semáforo para KPI */
+.bg-rojo {
+  background-color: #dc3545 !important;
+  color: #fff;
+}
+.bg-amarillo {
+  background-color: #ffc107 !important;
+}
+.bg-verde {
+  background-color: #28a745 !important;
+  color: #fff;
+}
+
+/* Ajustes para organigrama */
+.org-list {
+  margin-left: 0;
+  font-size: 0.95rem;
+}
+
+.org-list li {
+  margin: 0.5rem 0;
+}
+
+/* ==========================
+   Pantalla Personal (UI)
+   ========================== */
+
+/* Fila marcada como BAJA */
+.baja-row {
+  background: #fff5f5;
+}
+
+/* Modo edición */
+tr.employee-row.is-editing {
+  background: #eef6ff;
+}
+
+/* Campos en modo lectura: se ven como texto y no “gritan” */
+tr.employee-row .readlike[readonly],
+tr.employee-row .readlike:disabled {
+  background: transparent !important;
+  border-color: transparent !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  box-shadow: none !important;
+}
+
+tr.employee-row .readlike:disabled {
+  opacity: 1;
+  color: inherit;
+}
+
+.employee-actions .btn {
+  min-width: 84px;
+}
+
+.save-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .85rem;
+  padding: .25rem .5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,.1);
+}
+
+.save-pill.ok {
+  background: rgba(25,135,84,.1);
+  color: #198754;
+  border-color: rgba(25,135,84,.25);
+}
+
+.save-pill.err {
+  background: rgba(220,53,69,.08);
+  color: #dc3545;
+  border-color: rgba(220,53,69,.25);
+}
+/* Acciones más visibles en edición */
+tr.employee-row.is-editing .employee-actions {
+  position: sticky;
+  right: 0;
+  background: rgba(238, 246, 255, 0.95);
+}
+tr.employee-row.is-editing .employee-actions .btn-success {
+  box-shadow: 0 0 0 .15rem rgba(13,110,253,.25);
+}

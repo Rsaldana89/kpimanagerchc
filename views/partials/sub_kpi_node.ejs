@@ -1,0 +1,208 @@
+<% const empNoFmt = node.empleado.incidencia_id ? String(node.empleado.incidencia_id).padStart(5,'0') : ''; %>
+<div class="card mb-4 ms-3" data-team-card data-emp-name="<%= node.empleado.nombre || '' %>" data-emp-no="<%= empNoFmt %>" data-emp-dept="<%= node.empleado.departamento_nombre || '' %>">
+  <% const fmtDate = (d) => { if (!d) return ''; const dd = new Date(d); if (isNaN(dd.getTime())) return ''; return dd.toLocaleDateString('es-MX'); }; %>
+  <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+  <div>
+    <strong><%= node.empleado.nombre %></strong>
+    <% if (empNoFmt) { %>
+      <span class="badge bg-light text-dark border ms-2">#<%= empNoFmt %></span>
+    <% } %>
+    <% if (node.empleado.puesto_nombre) { %>
+      - <%= node.empleado.puesto_nombre %>
+    <% } %>
+    <% if (node.empleado.departamento_nombre) { %>
+      - <%= node.empleado.departamento_nombre %>
+    <% } %>
+  </div>
+  <div class="btn-group">
+    <button type="button" class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+      Exportar KPIs
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end">
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/employee/<%= node.empleado.id %>?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period">
+          Periodo (mes)
+        </a>
+      </li>
+      <li>
+        <a class="dropdown-item" href="/dashboard/export/employee/<%= node.empleado.id %>?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=annual">
+          Historial anual
+        </a>
+      </li>
+    </ul>
+  </div>
+</div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-bordered align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>KPI</th>
+            <th>Objetivo</th>
+            <th>Unidad</th>
+            <th>Criterios de calificación</th>
+            <th class="text-center">Resultado</th>
+            <th>Comentarios</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% node.kpis.forEach(kpi => {
+               const res = (node.resultados[kpi.id] && node.resultados[kpi.id][selectedMonth]) || {};
+               const isLocked = (res.visto_bueno === 1);
+               let colorClass = '';
+               if (res.color === 'rojo') colorClass = 'bg-danger text-light';
+               if (res.color === 'amarillo') colorClass = 'bg-warning';
+               if (res.color === 'verde') colorClass = 'bg-success text-light';
+               const puntaje = res.color === 'rojo' ? 40 : (res.color === 'amarillo' ? 70 : (res.color === 'verde' ? 100 : ''));
+          %>
+          <tr data-kpi-row data-empleado-id="<%= node.empleado.id %>" data-kpi-id="<%= kpi.id %>" data-can-approve="<%= node.canApprove ? '1' : '0' %>">
+            <td><%= kpi.nombre %></td>
+            <td><%= kpi.objetivo %></td>
+            <td><%= kpi.unidad %></td>
+            <td>
+              <%
+                const fmt = (v) => {
+                  if (v === null || v === undefined || v === '') return '';
+                  const n = Number(v);
+                  if (!Number.isFinite(n)) return String(v);
+                  const s = String(n);
+                  return s.replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
+                };
+              %>
+              <% if (kpi.score_type === 'CRITERION') { %>
+                <small>
+                  R: <%= kpi.criterion_red || '-' %><br>
+                  A: <%= kpi.criterion_yellow || '-' %><br>
+                  V: <%= kpi.criterion_green || '-' %>
+                </small>
+              <% } else if (kpi.threshold_yellow == null || kpi.threshold_green == null) { %>
+                <small class="text-muted">Sin criterios definidos</small>
+              <% } else { %>
+                <small>
+                  <span class="text-muted">Sentido:</span> <strong><%= (kpi.direction === 'LOWER_BETTER') ? '↓' : '↑' %></strong><br>
+                  <span class="text-muted">Amarillo:</span> <strong><%= fmt(kpi.threshold_yellow) %></strong><br>
+                  <span class="text-muted">Verde:</span> <strong><%= fmt(kpi.threshold_green) %></strong>
+                  <div class="text-muted" style="font-size: 11px; line-height: 1.2; margin-top:4px;">
+                    Rojo: <%= (kpi.direction === 'LOWER_BETTER') ? 'mayor a Amarillo' : 'menor a Amarillo' %>
+                  </div>
+                </small>
+              <% } %>
+            </td>
+            <td>
+              <form method="post" action="/dashboard/save" class="d-flex align-items-center" data-kpi-form data-kpi-id="<%= kpi.id %>">
+                <input type="hidden" name="empleado_id" value="<%= node.empleado.id %>">
+                <input type="hidden" name="kpi_id" value="<%= kpi.id %>">
+                <input type="hidden" name="anio" value="<%= selectedYear %>">
+                <input type="hidden" name="mes" value="<%= selectedMonth %>">
+                <% if (kpi.score_type === 'CRITERION') { %>
+                  <select class="form-select form-select-sm <%= colorClass %>" name="valor" data-kpi-valor style="width:140px;" <%= isLocked ? 'disabled' : '' %>>
+                    <option value="" <%= (!res.valor) ? 'selected' : '' %>>--</option>
+                    <% if (kpi.criterion_red) { %><option value="<%= kpi.criterion_red %>" <%= res.valor===kpi.criterion_red ? 'selected' : '' %>><%= kpi.criterion_red %></option><% } %>
+                    <% if (kpi.criterion_yellow) { %><option value="<%= kpi.criterion_yellow %>" <%= res.valor===kpi.criterion_yellow ? 'selected' : '' %>><%= kpi.criterion_yellow %></option><% } %>
+                    <% if (kpi.criterion_green) { %><option value="<%= kpi.criterion_green %>" <%= res.valor===kpi.criterion_green ? 'selected' : '' %>><%= kpi.criterion_green %></option><% } %>
+                  </select>
+                <% } else { %>
+                  <input type="text" class="form-control form-control-sm <%= colorClass %>" name="valor" value="<%= res.valor || '' %>" style="width:75px;" data-kpi-valor <%= isLocked ? 'disabled' : '' %>>
+                <% } %>
+                <button type="submit" class="btn btn-sm btn-outline-primary ms-1" title="Guardar" <%= isLocked ? 'disabled' : '' %>><span>✔</span></button>
+
+                <!-- Puntaje dentro del semáforo -->
+                <span class="badge ms-2 <%= (res.color==='rojo') ? 'bg-danger text-light' : (res.color==='amarillo' ? 'bg-warning text-dark' : (res.color==='verde' ? 'bg-success text-light' : 'bg-light text-dark border')) %>"
+                      data-kpi-scorebadge
+                      style="min-width:52px; text-align:center; <%= puntaje === '' ? 'display:none;' : '' %>">
+                  <%= puntaje %>
+                </span>
+              </form>
+              <% const estado = isLocked ? 'APROBADO' : (res.revision_por ? 'EN REVISIÓN' : 'ABIERTO');
+                 const estadoClass = (estado === 'APROBADO') ? 'bg-success text-light' : (estado === 'EN REVISIÓN' ? 'bg-warning text-dark' : 'bg-secondary text-light');
+              %>
+              <div class="d-flex align-items-center flex-wrap gap-1 mt-1">
+                <span class="badge <%= estadoClass %>" data-status-badge><%= estado %></span>
+                <small class="text-muted" data-status-meta>
+                  <% if (estado === 'APROBADO') { %>
+                    por <strong><%= res.visto_nombre || '—' %></strong> · <%= fmtDate(res.visto_fecha) || '' %>
+                  <% } else if (estado === 'EN REVISIÓN') { %>
+                    por <strong><%= res.revision_nombre || '—' %></strong> · <%= fmtDate(res.revision_fecha) || '' %>
+                    <% if (res.revision_motivo) { %>
+                      <span class="text-muted">· <em><%= res.revision_motivo %></em></span>
+                    <% } %>
+                  <% } %>
+                </small>
+
+                <button type="button"
+                        class="btn btn-sm btn-outline-success ms-2 <%= (node.canApprove && estado !== 'APROBADO') ? '' : 'd-none' %>"
+                        data-lock-toggle data-action="approve">
+                  ✅ Aprobar
+                </button>
+
+                <button type="button"
+                        class="btn btn-sm btn-outline-warning ms-1 <%= (node.canSendToReview && estado === 'APROBADO') ? '' : 'd-none' %>"
+                        data-lock-toggle data-action="review">
+                  ↩ Reabrir
+                </button>
+
+                <% if (estado === 'APROBADO') { %>
+                  <span class="badge bg-dark ms-1" data-lock-badge title="Aprobado / cerrado">🔒</span>
+                <% } %>
+              </div>
+            </td>
+            <td>
+              <form method="post" action="/dashboard/save" data-kpi-comment-form data-kpi-id="<%= kpi.id %>" class="d-flex gap-1 align-items-start">
+                <input type="hidden" name="empleado_id" value="<%= node.empleado.id %>">
+                <input type="hidden" name="kpi_id" value="<%= kpi.id %>">
+                <input type="hidden" name="anio" value="<%= selectedYear %>">
+                <input type="hidden" name="mes" value="<%= selectedMonth %>">
+                <!-- comentario sin forzar valor -->
+                <textarea name="comentario" class="form-control form-control-sm" rows="1" style="min-width:220px;" placeholder="Comentario..." <%= isLocked ? 'disabled' : '' %>><%= res.comentario || '' %></textarea>
+                <button type="submit" class="btn btn-sm btn-outline-secondary" title="Guardar comentario" <%= isLocked ? 'disabled' : '' %>>💾</button>
+              </form>
+            </td>
+          </tr>
+          <% }); %>
+        </tbody>
+      </table>
+    </div>
+    <!-- Retroalimentación del periodo (plegable) -->
+    <div class="mt-2">
+      <button class="btn btn-sm btn-outline-secondary" type="button"
+              data-toggle-retro data-target="#retro-emp-<%= node.empleado.id %>">
+        ▸ Desplegar retro
+      </button>
+      <div id="retro-emp-<%= node.empleado.id %>" class="border rounded p-2 mt-2" style="display:none;">
+        <form method="post" action="/dashboard/feedback/save" data-feedback-form>
+          <input type="hidden" name="empleado_id" value="<%= node.empleado.id %>">
+          <input type="hidden" name="anio" value="<%= selectedYear %>">
+          <input type="hidden" name="mes" value="<%= selectedMonth %>">
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label small mb-1">Fortalezas</label>
+              <textarea name="fortalezas" class="form-control form-control-sm" rows="3" placeholder="Fortalezas..."><%= (node.feedback && node.feedback.fortalezas) || '' %></textarea>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small mb-1">Áreas de oportunidad</label>
+              <textarea name="oportunidades" class="form-control form-control-sm" rows="3" placeholder="Áreas de oportunidad..."><%= (node.feedback && node.feedback.oportunidades) || '' %></textarea>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label small mb-1">Compromisos</label>
+              <textarea name="compromisos" class="form-control form-control-sm" rows="3" placeholder="Compromisos..."><%= (node.feedback && node.feedback.compromisos) || '' %></textarea>
+            </div>
+          </div>
+          <div class="mt-2 d-flex align-items-center gap-2">
+            <button type="submit" class="btn btn-sm btn-primary">Guardar retro</button>
+            <span data-feedback-status class="text-muted small"></span>
+          </div>
+        </form>
+      </div>
+    </div>
+    <% if (node.hasChildren) { %>
+      <!-- Carga bajo demanda: solo se trae UN NIVEL por click. -->
+      <button type="button"
+              class="btn btn-sm btn-outline-secondary mt-2"
+              data-subtree-btn
+              data-emp-id="<%= node.empleado.id %>">
+        ▸ Desplegar nivel
+      </button>
+      <div id="subtree-<%= node.empleado.id %>" data-subtree-container style="display:none;"></div>
+    <% } %>
+  </div>
+</div>
