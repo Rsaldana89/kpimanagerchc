@@ -13,7 +13,38 @@
   <%= monthNames[selectedMonth - 1] %> <%= selectedYear %>
   <small class="text-muted">(periodo mensual)</small>
 </h2>
-<p>En esta tabla puedes capturar tus resultados mensuales para cada KPI asignado. Selecciona un periodo y guarda tu resultado para ese mes. Si el KPI no es numérico o porcentaje, puedes escribir texto libre; el color se calcula automáticamente para valores numéricos.</p>
+<p>
+  En esta tabla puedes capturar tus resultados mensuales para cada KPI asignado. Selecciona un periodo y guarda tu resultado
+  para ese mes. Si el KPI es <strong>numérico</strong>, <strong>porcentual</strong> o <strong>por criterio</strong>, ingresa tu resultado; para
+  otros casos puedes escribir texto libre. El semáforo de color se calcula automáticamente para valores numéricos y porcentuales.
+</p>
+
+<!-- Si no se especifica anio/mes en la URL, redirigir al periodo por defecto calculado en el cliente.
+     Esto permite que el periodo se ajuste al cambiar la fecha del equipo y que la URL refleje
+     el periodo seleccionado.  El servidor también aplica esta lógica como respaldo. -->
+<script>
+  (function() {
+    try {
+      const url = new URL(window.location.href);
+      const hasYear = url.searchParams.has('anio');
+      const hasMonth = url.searchParams.has('mes');
+      if (!hasYear && !hasMonth) {
+        const now = new Date();
+        let y = now.getFullYear();
+        let m = now.getMonth() + 1;
+        if (now.getDate() <= 10) {
+          m -= 1;
+          if (m < 1) { m = 12; y -= 1; }
+        }
+        url.searchParams.set('anio', y);
+        url.searchParams.set('mes', m);
+        window.location.replace(url.pathname + '?' + url.searchParams.toString() + (url.hash || ''));
+      }
+    } catch (e) {
+      console.error('Redirección de periodo por defecto falló:', e);
+    }
+  })();
+</script>
 
 <!-- Formulario para seleccionar periodo -->
 <form method="get" action="/dashboard" class="row row-cols-lg-auto g-3 align-items-center mb-3">
@@ -83,6 +114,22 @@
       </li>
     </ul>
   </div>
+
+  <!-- Envío por correo -->
+  <div class="btn-group">
+    <button type="button" class="btn btn-sm btn-outline-info dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+      Enviar KPIs por correo
+    </button>
+    <ul class="dropdown-menu">
+      <li><a class="dropdown-item" href="#" id="send-self">Enviar mis KPIs</a></li>
+      <% if (typeof hasDirectSubordinates !== 'undefined' && hasDirectSubordinates) { %>
+      <li><a class="dropdown-item" href="#" id="send-direct">Enviar a mis subordinados directos</a></li>
+      <% } %>
+      <% if (typeof hasAnySubordinates !== 'undefined' && hasAnySubordinates) { %>
+      <li><a class="dropdown-item" href="#" id="send-team">Enviar a todo mi equipo</a></li>
+      <% } %>
+    </ul>
+  </div>
 </div>
 
 <div class="table-responsive">
@@ -94,23 +141,52 @@
         <th>Objetivo</th>
         <th>Unidad</th>
         <th>Criterios de calificación</th>
-        <th class="text-center">Resultado</th>
+        <!-- Cambiamos "Resultado" por "Calificación" para mayor claridad -->
+        <th class="text-center">Calificación</th>
+        <!-- Nuevo: columna de peso (%) asignado a cada KPI -->
+        <th class="text-center">Peso&nbsp;(%)</th>
+        <!-- Nuevo: puntaje ponderado del KPI -->
+        <th class="text-center">Puntaje&nbsp;ponderado</th>
         <th>Comentarios</th>
       </tr>
     </thead>
     <tbody>
-      <% kpis.forEach(kpi => {
-           const res = (resultados[kpi.id] && resultados[kpi.id][selectedMonth]) || {};
-           let colorClass = '';
-           if (res.color === 'rojo') colorClass = 'bg-danger text-light';
-           if (res.color === 'amarillo') colorClass = 'bg-warning';
-           if (res.color === 'verde') colorClass = 'bg-success text-light';
-           const isLocked = (res.visto_bueno === 1);
-           const puntaje = res.color === 'rojo' ? 40 : (res.color === 'amarillo' ? 70 : (res.color === 'verde' ? 100 : ''));
-           const estado = isLocked ? 'APROBADO' : (res.revision_por ? 'EN REVISIÓN' : 'ABIERTO');
-           const estadoClass = (estado === 'APROBADO') ? 'bg-success text-light' : (estado === 'EN REVISIÓN' ? 'bg-warning text-dark' : 'bg-secondary text-light');
+      <%
+        // Llevar la suma total de los puntajes ponderados de este periodo.
+        let totalWeightedScore = 0;
+        kpis.forEach(kpi => {
+          const res = (resultados[kpi.id] && resultados[kpi.id][selectedMonth]) || {};
+          let colorClass = '';
+          if (res.color === 'rojo') colorClass = 'bg-danger text-light';
+          if (res.color === 'amarillo') colorClass = 'bg-warning';
+          if (res.color === 'verde') colorClass = 'bg-success text-light';
+          const isLocked = (res.visto_bueno === 1);
+          const puntaje = res.color === 'rojo' ? 40 : (res.color === 'amarillo' ? 70 : (res.color === 'verde' ? 100 : ''));
+          const estado = isLocked ? 'APROBADO' : (res.revision_por ? 'EN REVISIÓN' : 'ABIERTO');
+          const estadoClass = (estado === 'APROBADO') ? 'bg-success text-light' : (estado === 'EN REVISIÓN' ? 'bg-warning text-dark' : 'bg-secondary text-light');
+          // Calcular puntaje ponderado.  Si puntaje está vacío (''), dejamos vacío.
+          let weightedScore = '';
+          const pesoVal = (kpi.peso !== null && kpi.peso !== undefined) ? Number(kpi.peso) : 0;
+          if (puntaje !== '' && pesoVal) {
+            const ws = (Number(puntaje) * (pesoVal / 100));
+            weightedScore = ws.toFixed(2).replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
+            totalWeightedScore += ws;
+          }
       %>
-      <tr data-kpi-row data-empleado-id="<%= user.id %>" data-kpi-id="<%= kpi.id %>" data-can-approve="<%= canApproveSelf ? '1' : '0' %>">
+      <tr
+        data-kpi-row
+        data-empleado-id="<%= user.id %>"
+        data-kpi-id="<%= kpi.id %>"
+        data-can-approve="<%= canApproveSelf ? '1' : '0' %>"
+        data-score-type="<%= (kpi.score_type || '').toUpperCase() %>"
+        data-direction="<%= (kpi.direction || 'HIGHER_BETTER').toUpperCase() %>"
+        data-threshold-yellow="<%= (kpi.threshold_yellow !== null && kpi.threshold_yellow !== undefined) ? kpi.threshold_yellow : '' %>"
+        data-threshold-green="<%= (kpi.threshold_green !== null && kpi.threshold_green !== undefined) ? kpi.threshold_green : '' %>"
+        data-criterion-red="<%= kpi.criterion_red || '' %>"
+        data-criterion-yellow="<%= kpi.criterion_yellow || '' %>"
+        data-criterion-green="<%= kpi.criterion_green || '' %>"
+        data-weight="<%= (kpi.peso !== null && kpi.peso !== undefined) ? kpi.peso : 0 %>"
+      >
         <td><strong><%= kpi.nombre %></strong></td>
         <td><%= kpi.objetivo %></td>
         <td><%= kpi.unidad %></td>
@@ -234,6 +310,35 @@
           </div>
         </td>
 
+        <!-- Nuevo: columna de peso (%) -->
+        <td class="text-center">
+          <% /* Formatear el peso al vuelo: muestra hasta 2 decimales y elimina ceros innecesarios */ %>
+          <%= (kpi.peso !== null && kpi.peso !== undefined) ?
+              String(Number(kpi.peso).toFixed(2)).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1') : '0' %>%
+        </td>
+
+        <!-- Nuevo: columna de puntaje ponderado -->
+        <td class="text-center">
+          <% /* Si no hay puntaje o peso, muestra vacío.  weightedScore ya fue calculado arriba */ %>
+          <% if (weightedScore === '') { %>
+            <span
+              data-weighted-score
+              data-ws=""
+              class="badge bg-light text-dark border"
+            >
+              —
+            </span>
+          <% } else { %>
+            <span
+              data-weighted-score
+              data-ws="<%= weightedScore %>"
+              class="badge <%= (res.color==='rojo') ? 'bg-danger text-light' : (res.color==='amarillo' ? 'bg-warning text-dark' : (res.color==='verde' ? 'bg-success text-light' : 'bg-light text-dark border')) %>"
+            >
+              <%= weightedScore %>
+            </span>
+          <% } %>
+        </td>
+
         <td>
           <form method="post" action="/dashboard/save" data-kpi-comment-form data-kpi-id="<%= kpi.id %>" class="d-flex gap-1 align-items-start">
             <input type="hidden" name="kpi_id" value="<%= kpi.id %>">
@@ -254,6 +359,40 @@
     </tbody>
   </table>
 </div>
+
+  <!-- Resumen de puntajes ponderados del periodo -->
+  <div class="mt-3">
+    <% 
+      // Calcular totales del mes.  Redondeamos a dos decimales y limpiamos ceros finales.
+      const _total = totalWeightedScore || 0;
+      const totalDisplay = _total.toFixed(2).replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
+      let generalColorClass = '';
+      let generalText = '';
+      if (_total >= 70) {
+        generalColorClass = 'bg-success text-light';
+        generalText = 'Verde';
+      } else if (_total >= 40) {
+        generalColorClass = 'bg-warning text-dark';
+        generalText = 'Amarillo';
+      } else {
+        generalColorClass = 'bg-danger text-light';
+        generalText = 'Rojo';
+      }
+    %>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <!-- Etiqueta de resumen más intuitiva -->
+      <strong>Resultado final del mes:</strong>
+      <span
+        data-total-weighted
+        class="badge bg-light text-dark border"
+      ><%= totalDisplay %></span>
+      <span
+        data-total-color
+        class="badge <%= generalColorClass %>"
+      ><%= generalText %></span>
+    </div>
+    <small class="text-muted">El máximo posible es 100 puntos si todos los KPIs están en verde.</small>
+  </div>
 
 <!-- Retroalimentación del periodo (plegable) -->
 <div class="card mt-3 mb-4">
@@ -434,6 +573,23 @@
           else if (data.color === 'verde') scoreBadge.classList.add('bg-success','text-light');
           else scoreBadge.classList.add('bg-light','text-dark','border');
         }
+
+        // Nuevo: recalcular y actualizar puntaje ponderado y total después de guardar
+        try {
+          const kpiRow = form.closest('tr[data-kpi-row]');
+          if (kpiRow) {
+            // Utilizar el valor actual del campo capturado para recalcular
+            const valInput = form.querySelector('[data-kpi-valor]');
+            const rawVal = valInput ? valInput.value : '';
+            updateRowWeighted(kpiRow, rawVal);
+            updateTotalSummary();
+            // También actualizar el total ponderado de la tarjeta de equipo (si corresponde)
+            const card = kpiRow.closest('[data-team-card]');
+            if (card) updateTeamMemberSummary(card);
+          }
+        } catch (ex) {
+          console.error('Error al actualizar puntaje ponderado:', ex);
+        }
       } catch (err) {
         console.error('Error guardando KPI:', err);
         if (input) input.classList.add('is-invalid');
@@ -443,6 +599,201 @@
       }
     });
 
+    /**
+     * Calcula el color y puntaje base de un KPI dado su tipo y valor.
+     * Replica la lógica del backend (services/kpiScoring.js).
+     *
+     * @param {HTMLElement} row - fila TR con data-* que define score_type, direction, thresholds y criterios.
+     * @param {string|number|null} rawValue - valor del campo capturado.
+     * @returns {{color: ('rojo'|'amarillo'|'verde'|null), score: (number|null)}}
+     */
+    function computeKpiScore(row, rawValue) {
+      if (!row) return { color: null, score: null };
+      const st = (row.dataset.scoreType || '').toUpperCase();
+      const dir = (row.dataset.direction || 'HIGHER_BETTER').toUpperCase();
+      // Si es CRITERION: comparar con criterios exactos
+      if (st === 'CRITERION') {
+        const v = (rawValue === null || rawValue === undefined) ? '' : String(rawValue).trim();
+        const cr = (row.dataset.criterionRed || '').trim();
+        const cy = (row.dataset.criterionYellow || '').trim();
+        const cg = (row.dataset.criterionGreen || '').trim();
+        if (!cr && !cy && !cg) {
+          return { color: null, score: null };
+        }
+        if (cg && v === cg) return { color: 'verde', score: 100 };
+        if (cy && v === cy) return { color: 'amarillo', score: 70 };
+        if (cr && v === cr) return { color: 'rojo', score: 40 };
+        return { color: null, score: null };
+      }
+      // NUMBER/PERCENT: thresholds
+      const parseNum = (val) => {
+        if (val === null || val === undefined) return null;
+        if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+        const s = String(val).replace('%', '').trim().replace(',', '.');
+        if (!s) return null;
+        const n = parseFloat(s);
+        return Number.isFinite(n) ? n : null;
+      };
+      const n = parseNum(rawValue);
+      const ty = parseNum(row.dataset.thresholdYellow);
+      const tg = parseNum(row.dataset.thresholdGreen);
+      if (n === null || ty === null || tg === null) {
+        return { color: null, score: null };
+      }
+      if (dir === 'HIGHER_BETTER') {
+        if (n >= tg) return { color: 'verde', score: 100 };
+        if (n >= ty) return { color: 'amarillo', score: 70 };
+        return { color: 'rojo', score: 40 };
+      } else { // LOWER_BETTER
+        if (n <= tg) return { color: 'verde', score: 100 };
+        if (n <= ty) return { color: 'amarillo', score: 70 };
+        return { color: 'rojo', score: 40 };
+      }
+    }
+
+    /**
+     * Actualiza el puntaje ponderado y estilos de una fila de KPI en la tabla "Mis KPIs".
+     * @param {HTMLElement} row - la fila TR del KPI.
+     * @param {string|number|null} rawValue - valor ingresado por el usuario.
+     */
+    function updateRowWeighted(row, rawValue) {
+      if (!row) return;
+      const { color, score } = computeKpiScore(row, rawValue);
+      // Peso
+      const weight = parseFloat(row.dataset.weight) || 0;
+      let ws = null;
+      if (score !== null && weight) {
+        ws = (score * (weight / 100));
+      }
+      // Encontrar la celda/ badge del puntaje ponderado
+      const badge = row.querySelector('[data-weighted-score]');
+      if (badge) {
+        if (ws === null) {
+          badge.textContent = '—';
+          badge.dataset.ws = '';
+          badge.className = 'badge bg-light text-dark border';
+        } else {
+          // Formateo: hasta 2 decimales sin ceros extras
+          const formatted = ws.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+          badge.textContent = formatted;
+          badge.dataset.ws = formatted;
+          // Actualizar clases según color
+          badge.classList.remove('bg-danger','bg-warning','bg-success','bg-light','text-dark','text-light','border');
+          if (color === 'rojo') badge.classList.add('bg-danger','text-light');
+          else if (color === 'amarillo') badge.classList.add('bg-warning','text-dark');
+          else if (color === 'verde') badge.classList.add('bg-success','text-light');
+          else badge.classList.add('bg-light','text-dark','border');
+        }
+      }
+      // Actualizar clase de color en el campo de captura si existe
+      const inputEl = row.querySelector('[data-kpi-valor]');
+      if (inputEl) {
+        inputEl.classList.remove('bg-danger','bg-warning','bg-success','text-light');
+        if (color === 'rojo') inputEl.classList.add('bg-danger','text-light');
+        else if (color === 'amarillo') inputEl.classList.add('bg-warning');
+        else if (color === 'verde') inputEl.classList.add('bg-success','text-light');
+      }
+    }
+
+    /**
+     * Recalcula el total ponderado y el semáforo general en el resumen inferior.
+     */
+    function updateTotalSummary() {
+      let total = 0;
+      document.querySelectorAll('[data-weighted-score]').forEach(el => {
+        const vStr = el.dataset.ws || el.textContent;
+        const v = parseFloat(vStr);
+        if (!isNaN(v)) total += v;
+      });
+      const totalSpan = document.querySelector('[data-total-weighted]');
+      const colorSpan = document.querySelector('[data-total-color]');
+      if (totalSpan) {
+        // Formateo de total
+        const formatted = total.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+        totalSpan.textContent = formatted;
+      }
+      if (colorSpan) {
+        // Determinar color general
+        let genClass = '';
+        let genText = '';
+        if (total >= 70) { genClass = 'bg-success text-light'; genText = 'Verde'; }
+        else if (total >= 40) { genClass = 'bg-warning text-dark'; genText = 'Amarillo'; }
+        else { genClass = 'bg-danger text-light'; genText = 'Rojo'; }
+        // Limpiar clases previas excepto 'badge'
+        colorSpan.className = 'badge ' + genClass;
+        colorSpan.textContent = genText;
+      }
+    }
+
+    /**
+     * Recalcula el total ponderado y el color general para un colaborador (tarjeta de equipo).
+     * Busca todas las filas de KPI dentro de la tarjeta, calcula el puntaje ponderado de cada KPI
+     * en base al valor capturado y al peso, y actualiza las insignias de total y color.
+     *
+     * @param {HTMLElement} card - El contenedor `.card` con atributo `data-team-card`.
+     */
+    function updateTeamMemberSummary(card) {
+      if (!card) return;
+      let total = 0;
+      // Iterar sobre las filas de KPI dentro de esta tarjeta
+      card.querySelectorAll('tr[data-kpi-row]').forEach(row => {
+        const inp = row.querySelector('[data-kpi-valor]');
+        const rawVal = inp ? inp.value : '';
+        const { color, score } = computeKpiScore(row, rawVal);
+        const weight = parseFloat(row.dataset.weight) || 0;
+        if (score !== null && weight) {
+          total += score * (weight / 100);
+        }
+      });
+      // Formatear el total con hasta 2 decimales sin ceros extra
+      const formatted = total.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+      // Determinar color general según el total ponderado
+      let genClass = '';
+      let genText = '';
+      if (total >= 70) { genClass = 'bg-success text-light'; genText = 'Verde'; }
+      else if (total >= 40) { genClass = 'bg-warning text-dark'; genText = 'Amarillo'; }
+      else { genClass = 'bg-danger text-light'; genText = 'Rojo'; }
+      // Actualizar las insignias de total ponderado
+      card.querySelectorAll('[data-sub-total-weighted]').forEach(el => {
+        el.textContent = formatted;
+      });
+      // Actualizar las insignias de color
+      card.querySelectorAll('[data-sub-total-color]').forEach(el => {
+        el.textContent = genText;
+        el.className = 'badge ' + genClass;
+      });
+    }
+
+    // Delegación para actualizar puntajes en tiempo real al capturar valor del KPI
+    document.addEventListener('input', function(ev) {
+      const inp = ev.target;
+      if (!inp || !inp.matches('[data-kpi-valor]')) return;
+      const form = inp.closest('form[data-kpi-form]');
+      if (!form) return;
+      const row = inp.closest('tr[data-kpi-row]');
+      if (!row) return;
+      updateRowWeighted(row, inp.value);
+      updateTotalSummary();
+      // También actualiza el total ponderado de la tarjeta de equipo (si aplica)
+      const card = row.closest('[data-team-card]');
+      if (card) updateTeamMemberSummary(card);
+    });
+    document.addEventListener('change', function(ev) {
+      const inp = ev.target;
+      if (!inp || !inp.matches('[data-kpi-valor]')) return;
+      const form = inp.closest('form[data-kpi-form]');
+      if (!form) return;
+      const row = inp.closest('tr[data-kpi-row]');
+      if (!row) return;
+      updateRowWeighted(row, inp.value);
+      updateTotalSummary();
+      // También actualiza el total ponderado de la tarjeta de equipo (si aplica)
+      const card = row.closest('[data-team-card]');
+      if (card) updateTeamMemberSummary(card);
+    });
+
+    // Actualizar puntajes ponderados después de guardar un KPI via AJAX
+    // Se extiende el listener existente (data-kpi-form submit) para recalcular la fila y total
     // Guardado de comentario (AJAX) sin tocar el semáforo
     document.addEventListener('submit', async function(e){
       const form = e.target;
@@ -630,6 +981,62 @@
         alert(err.message || 'No se pudo aplicar');
       } finally {
         btn.disabled = false;
+      }
+    });
+
+    // Enviar resultados por correo
+    document.addEventListener('click', async function(e){
+      const selfLink = e.target.closest('#send-self');
+      const teamLink = e.target.closest('#send-team');
+      const directLink = e.target.closest('#send-direct');
+      if (!selfLink && !teamLink && !directLink) return;
+      e.preventDefault();
+      let url;
+      let confirmMsg;
+      let isTeam = false;
+      let isDirect = false;
+      if (teamLink) {
+        url = '/dashboard/email/team';
+        confirmMsg = '¿Enviar los resultados de KPIs a todos los integrantes de tu equipo?';
+        isTeam = true;
+      } else if (directLink) {
+        url = '/dashboard/email/direct';
+        confirmMsg = '¿Enviar los resultados de KPIs a tus subordinados directos?';
+        isDirect = true;
+      } else {
+        url = '/dashboard/email/self';
+        confirmMsg = '¿Enviar tus resultados de KPIs a tu correo registrado?';
+      }
+      const fd = { anio: String(_selectedYear), mes: String(_selectedMonth) };
+      if (!window.confirm(confirmMsg)) return;
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify(fd)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || (data && data.success === false)) {
+          const err = (data && data.error) || 'No se pudo enviar el correo';
+          alert(err);
+          return;
+        }
+        if (isTeam || isDirect) {
+          const count = data.count || 0;
+          alert(`Correos enviados a ${count} colaborador${count === 1 ? '' : 'es'}.`);
+        } else {
+          if (data.skipped) {
+            alert('Tus resultados ya habían sido enviados anteriormente.');
+          } else {
+            alert('Correo enviado correctamente a tu buzón.');
+          }
+        }
+      } catch (err) {
+        console.error('Error al enviar correo:', err);
+        alert('Ocurrió un error de red al enviar el correo.');
       }
     });
   })();

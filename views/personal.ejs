@@ -42,6 +42,7 @@
 </form>
 
 <!-- Botones para importar desde incidencias -->
+<% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
 <div class="mb-3 d-flex gap-2">
   <form action="/personal/import-nuevos" method="post">
     <button type="submit" class="btn btn-primary">Actualizar personal desde incidencias</button>
@@ -53,6 +54,11 @@
     <button type="submit" class="btn btn-outline-danger">Actualizar BAJAS desde incidencias</button>
   </form>
 </div>
+<% } else { %>
+  <div class="mb-3">
+    <span class="badge bg-secondary">Solo los administradores pueden actualizar datos desde incidencias</span>
+  </div>
+<% } %>
 
 <div class="table-responsive">
   <table class="table table-bordered table-hover table-sm align-middle">
@@ -153,18 +159,22 @@
               </div>
             </td>
             <td>
-              <div class="d-flex flex-column gap-1 employee-actions">
-                <div class="d-flex gap-1 flex-wrap">
-                  <button type="button" class="btn btn-sm btn-outline-primary" data-edit-row>Editar</button>
-                  <button type="button" class="btn btn-sm btn-success" data-save-row disabled>Guardar</button>
-                  <button type="button" class="btn btn-sm btn-outline-secondary d-none" data-cancel-row>Cancelar</button>
-                  <span class="badge bg-primary ms-2 d-none" data-editing-badge>Editando</span>
+              <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
+                <div class="d-flex flex-column gap-1 employee-actions">
+                  <div class="d-flex gap-1 flex-wrap">
+                    <button type="button" class="btn btn-sm btn-outline-primary" data-edit-row>Editar</button>
+                    <button type="button" class="btn btn-sm btn-success" data-save-row disabled>Guardar</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary d-none" data-cancel-row>Cancelar</button>
+                    <span class="badge bg-primary ms-2 d-none" data-editing-badge>Editando</span>
+                  </div>
+                  <span class="save-pill d-none" data-save-pill></span>
+                  <!-- Flags para generación rápida de credenciales (se manejan en JS) -->
+                  <input type="hidden" name="auto_generate_login" value="0" data-auto-generate>
+                  <input type="hidden" name="reset_login_password" value="0" data-reset-password>
                 </div>
-                <span class="save-pill d-none" data-save-pill></span>
-                <!-- Flags para generación rápida de credenciales (se manejan en JS) -->
-                <input type="hidden" name="auto_generate_login" value="0" data-auto-generate>
-                <input type="hidden" name="reset_login_password" value="0" data-reset-password>
-              </div>
+              <% } else { %>
+                <div class="small text-muted">Solo lectura</div>
+              <% } %>
             </td>
         </tr>
       <% }) %>

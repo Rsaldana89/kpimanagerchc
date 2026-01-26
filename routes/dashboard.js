@@ -4,6 +4,34 @@ const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { scoreKpi } = require('../services/kpiScoring');
+
+/*
+ * Calcula el periodo por defecto basado en la fecha actual.  Si el día
+ * del mes es menor o igual a 10, se considera que el periodo por
+ * defecto corresponde al mes anterior; de lo contrario se toma el
+ * mes actual.  Este comportamiento permite que, durante los
+ * primeros 10 días del mes, se sigan mostrando y editando los
+ * resultados del mes pasado.  El cálculo usa la fecha del
+ * servidor (por ejemplo, la configuración de la PC donde corre
+ * Node.js), de modo que cambiar el reloj del equipo afecta el
+ * periodo que se selecciona.
+ *
+ * @param {Date} [now] Objeto Date opcional para pruebas; por
+ *     defecto usa new Date().
+ * @returns {{year:number, month:number}} Objeto con año y mes (1-12).
+ */
+function getDefaultPeriod(now = new Date()) {
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1; // 1-12
+  if (now.getDate() <= 10) {
+    month -= 1;
+    if (month < 1) {
+      month = 12;
+      year -= 1;
+    }
+  }
+  return { year, month };
+}
 const ExcelJS = require('exceljs');
 
 /*
@@ -13,7 +41,8 @@ const ExcelJS = require('exceljs');
  */
 async function getKPIsByPosition(positionId) {
   const [rows] = await pool.execute(
-    `SELECT k.* FROM puesto_kpis pk
+    `SELECT k.*, pk.peso
+     FROM puesto_kpis pk
      JOIN kpis k ON pk.kpi_id = k.id
      WHERE pk.puesto_id = ?`,
     [positionId]
@@ -275,9 +304,12 @@ router.get('/', isAuth, async (req, res) => {
     // Obtener año y mes seleccionados de la consulta; por defecto el año y mes actuales
     let selectedYear = parseInt(req.query.anio, 10);
     let selectedMonth = parseInt(req.query.mes, 10);
-    const now = new Date();
-    if (!selectedYear || isNaN(selectedYear)) selectedYear = now.getFullYear();
-    if (!selectedMonth || isNaN(selectedMonth) || selectedMonth < 1 || selectedMonth > 12) selectedMonth = now.getMonth() + 1;
+    // Si falta el año o el mes, utilizamos el periodo por defecto basado en la
+    // fecha del servidor (ver getDefaultPeriod).  Esto permite que en los
+    // primeros 10 días del mes se muestre el mes anterior por defecto.
+    const def = getDefaultPeriod();
+    if (!selectedYear || isNaN(selectedYear)) selectedYear = def.year;
+    if (!selectedMonth || isNaN(selectedMonth) || selectedMonth < 1 || selectedMonth > 12) selectedMonth = def.month;
     // Obtener los KPIs asignados a este usuario a través de su puesto
     const kpis = await getKPIsByPosition(user.puesto_id);
     // Obtener los resultados del usuario para cada KPI y mes del año seleccionado
@@ -295,8 +327,13 @@ router.get('/', isAuth, async (req, res) => {
     // Construir SOLO el primer nivel de subordinados (puestos directos)
 	    const subordinateTree = await buildDirectSubordinateNodes(user, user.puesto_id, puestos, selectedYear, selectedMonth, showBajas);
 
-      // Reglas de aprobación: el usuario NO puede aprobarse a sí mismo si tiene jefe directo.
-      const canApproveSelf = (await employeeHasNoDirectBoss(user.id));
+    // Determinar si el usuario tiene subordinados directos y/o en todo su árbol
+    const hasDirectSubordinates = Array.isArray(subordinateTree) && subordinateTree.length > 0;
+    // Para verificar subordinados en cualquier nivel usamos buildSubordinatePuestoIds
+    const subordinatePuestos = buildSubordinatePuestoIds(user.puesto_id, puestos);
+    const hasAnySubordinates = subordinatePuestos && subordinatePuestos.length > 0;
+    // Reglas de aprobación: el usuario NO puede aprobarse a sí mismo si tiene jefe directo.
+    const canApproveSelf = (await employeeHasNoDirectBoss(user.id));
     res.render('dashboard', {
       title: 'Mis KPIs',
       kpis,
@@ -307,9 +344,11 @@ router.get('/', isAuth, async (req, res) => {
       currentEmpName,
       currentYear: selectedYear,
       selectedYear,
-	      selectedMonth,
-	      showBajas,
-        canApproveSelf
+      selectedMonth,
+      showBajas,
+      canApproveSelf,
+      hasDirectSubordinates,
+      hasAnySubordinates
     });
   } catch (err) {
     console.error('Error al cargar el dashboard:', err);
@@ -329,8 +368,12 @@ router.get('/subtree/:empleadoId', isAuth, async (req, res) => {
     const empleadoId = parseInt(req.params.empleadoId, 10);
     const anio = parseInt(req.query.anio, 10);
     const mes = parseInt(req.query.mes, 10);
-    const year = (!anio || isNaN(anio)) ? new Date().getFullYear() : anio;
-    const month = (!mes || isNaN(mes)) ? (new Date().getMonth() + 1) : mes;
+    // Si no se especifica año o mes, usar periodo por defecto
+    let year = parseInt(anio, 10);
+    let month = parseInt(mes, 10);
+    const def = getDefaultPeriod();
+    if (!year || isNaN(year)) year = def.year;
+    if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
 	  const showBajas = String(req.query.showBajas || '') === '1';
 
     if (!empleadoId || isNaN(empleadoId)) {
@@ -920,7 +963,10 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
     { header: 'Unidad', key: 'unidad' },
     { header: 'Resultado', key: 'valor' },
     { header: 'Semáforo', key: 'semaforo' },
-    { header: 'Puntaje', key: 'puntaje' },
+    { header: 'Puntaje base', key: 'puntaje' },
+    // Peso (%) y puntaje ponderado proporcionan contexto sobre la contribución de cada KPI
+    { header: 'Peso (%)', key: 'peso' },
+    { header: 'Puntaje ponderado', key: 'puntaje_ponderado' },
     { header: 'Estado', key: 'estado' },
     { header: 'Aprobado por', key: 'aprobado_por' },
     { header: 'Fecha aprobación', key: 'aprobado_fecha' },
@@ -942,6 +988,15 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
       const r = (resultados[kpi.id] && resultados[kpi.id][m]) || {};
       const color = normalizeColor(r.color || '');
       const puntaje = scoreFromColor(color);
+      // Calcular peso (%).  kpi.peso puede ser string o número.  Convertir a número seguro.
+      const pesoVal = toNumberOrNull(kpi.peso);
+      // Puntaje ponderado = puntaje * peso/100.  Si puntaje es null o peso inválido, se deja vacío.
+      let puntajePonderado = '';
+      if (pesoVal !== null && typeof puntaje === 'number') {
+        const ws = puntaje * (pesoVal / 100);
+        // Redondear a 2 decimales y eliminar ceros extra
+        puntajePonderado = ws.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+      }
       const fb = feedbackMap.get(Number(m)) || { fortalezas: '', oportunidades: '', compromisos: '' };
       const estado = statusFromResult(r);
       ws.addRow({
@@ -957,7 +1012,9 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
         unidad: kpi.unidad || '',
         valor: (r.valor !== undefined && r.valor !== null) ? r.valor : '',
         semaforo: color ? color.toUpperCase() : '',
-        puntaje: puntaje ?? '',
+        puntaje: (typeof puntaje === 'number') ? puntaje : '',
+        peso: (pesoVal !== null) ? (Number(pesoVal).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')) : '',
+        puntaje_ponderado: puntajePonderado,
         estado,
         aprobado_por: r.visto_nombre || '',
         aprobado_fecha: toExcelDateOrBlank(r.visto_fecha),
@@ -976,6 +1033,9 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
       // Color también en "Resultado" para visual rápido
       const valCell = lastRow.getCell(ws.getColumn('valor').number);
       styleSemaforo(valCell, color);
+      // Color en puntaje ponderado para consistencia visual
+      const pponCell = lastRow.getCell(ws.getColumn('puntaje_ponderado').number);
+      styleSemaforo(pponCell, color);
 
       // Estilo en Estado
       const stCell = lastRow.getCell(ws.getColumn('estado').number);
@@ -1143,7 +1203,9 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
     { header: 'Unidad', key: 'unidad' },
     { header: 'Resultado', key: 'valor' },
     { header: 'Semáforo', key: 'semaforo' },
-    { header: 'Puntaje', key: 'puntaje' },
+    { header: 'Puntaje base', key: 'puntaje' },
+    { header: 'Peso (%)', key: 'peso' },
+    { header: 'Puntaje ponderado', key: 'puntaje_ponderado' },
     { header: 'Estado', key: 'estado' },
     { header: 'Aprobado por', key: 'aprobado_por' },
     { header: 'Fecha aprobación', key: 'aprobado_fecha' },
@@ -1165,6 +1227,13 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
         const r = resMap.get(`${emp.id}|${kpi.id}|${m}`) || {};
         const color = normalizeColor(r.color || '');
         const puntaje = scoreFromColor(color);
+        // Calcular peso y puntaje ponderado
+        const pesoVal = toNumberOrNull(kpi.peso);
+        let puntajePonderado = '';
+        if (pesoVal !== null && typeof puntaje === 'number') {
+          const wsVal = puntaje * (pesoVal / 100);
+          puntajePonderado = wsVal.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+        }
         const fb = fbMap.get(`${emp.id}|${m}`) || { fortalezas: '', oportunidades: '', compromisos: '' };
         const estado = statusFromResult(r);
         ws.addRow({
@@ -1180,7 +1249,9 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
           unidad: kpi.unidad || '',
           valor: (r.valor !== undefined && r.valor !== null) ? r.valor : '',
           semaforo: color ? color.toUpperCase() : '',
-          puntaje: puntaje ?? '',
+          puntaje: (typeof puntaje === 'number') ? puntaje : '',
+          peso: (pesoVal !== null) ? (Number(pesoVal).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')) : '',
+          puntaje_ponderado: puntajePonderado,
           estado,
           aprobado_por: r.visto_nombre || '',
           aprobado_fecha: toExcelDateOrBlank(r.visto_fecha),
@@ -1195,6 +1266,8 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
         const lastRow = ws.lastRow;
         styleSemaforo(lastRow.getCell(ws.getColumn('semaforo').number), color);
         styleSemaforo(lastRow.getCell(ws.getColumn('valor').number), color);
+        // Estilo también en puntaje ponderado
+        styleSemaforo(lastRow.getCell(ws.getColumn('puntaje_ponderado').number), color);
         styleStatus(lastRow.getCell(ws.getColumn('estado').number), estado);
       });
     });
@@ -1252,8 +1325,11 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
  */
 router.get('/export/self', isAuth, async (req, res) => {
   const user = req.session.user;
-  const year = parseInt(req.query.anio, 10) || new Date().getFullYear();
-  const month = parseInt(req.query.mes, 10) || (new Date().getMonth() + 1);
+  let year = parseInt(req.query.anio, 10);
+  let month = parseInt(req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
   const mode = (String(req.query.mode || 'period').toLowerCase() === 'annual') ? 'annual' : 'period';
 
   try {
@@ -1281,8 +1357,11 @@ router.get('/export/self', isAuth, async (req, res) => {
 router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
   const user = req.session.user;
   const employeeId = parseInt(req.params.empleadoId, 10);
-  const year = parseInt(req.query.anio, 10) || new Date().getFullYear();
-  const month = parseInt(req.query.mes, 10) || (new Date().getMonth() + 1);
+  let year = parseInt(req.query.anio, 10);
+  let month = parseInt(req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
   const mode = (String(req.query.mode || 'period').toLowerCase() === 'annual') ? 'annual' : 'period';
 
   try {
@@ -1315,8 +1394,11 @@ router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
  */
 router.get('/export/team', isAuth, async (req, res) => {
   const user = req.session.user;
-  const year = parseInt(req.query.anio, 10) || new Date().getFullYear();
-  const month = parseInt(req.query.mes, 10) || (new Date().getMonth() + 1);
+  let year = parseInt(req.query.anio, 10);
+  let month = parseInt(req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
   const mode = (String(req.query.mode || 'period').toLowerCase() === 'annual') ? 'annual' : 'period';
   const includeBajas = String(req.query.showBajas || '') === '1';
 
@@ -1337,6 +1419,110 @@ router.get('/export/team', isAuth, async (req, res) => {
     return res.status(500).send('No se pudo exportar');
   }
 });
+
+/**
+ * Enviar por correo mis propios resultados de KPIs para un periodo.
+ * POST /dashboard/email/self?anio=YYYY&mes=MM
+ * El periodo se infiere del cuerpo o de la query.  Si no se
+ * especifica, utiliza el periodo por defecto.  Devuelve JSON con
+ * información sobre si el correo fue enviado o se omitió porque ya
+ * se había enviado.
+ */
+router.post('/email/self', isAuth, async (req, res) => {
+  const user = req.session.user;
+  if (!user) return res.status(401).json({ success: false, error: 'No autenticado' });
+  let year = parseInt(req.body.anio || req.query.anio, 10);
+  let month = parseInt(req.body.mes || req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  try {
+    const { sendIndividualKpiResults } = require('../services/kpiEmail');
+    const result = await sendIndividualKpiResults({ employeeId: user.id, year, month });
+    return res.json({ success: true, skipped: result.skipped, message: result.skipped ? 'Los resultados ya habían sido enviados anteriormente' : 'Correo enviado correctamente' });
+  } catch (e) {
+    console.error('Error enviando correo individual:', e);
+    return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });
+  }
+});
+
+/**
+ * Enviar por correo los resultados de KPIs a todos los subordinados del usuario.
+ * Sólo disponible para roles admin y manager.
+ * POST /dashboard/email/team?anio=YYYY&mes=MM
+ * Devuelve JSON con la cantidad de correos enviados.
+ */
+router.post('/email/team', isAuth, async (req, res) => {
+  const user = req.session.user;
+  if (!user) return res.status(401).json({ success: false, error: 'No autenticado' });
+  // Verificar que el usuario tenga subordinados en cualquier nivel
+  try {
+    const [puestos] = await pool.execute('SELECT id, responde_a_id FROM puestos');
+    const subordinatePuestos = buildSubordinatePuestoIds(user.puesto_id, puestos);
+    if (!subordinatePuestos || subordinatePuestos.length === 0) {
+      return res.status(403).json({ success: false, error: 'No tiene equipo subordinado para enviar' });
+    }
+  } catch (e) {
+    console.error('Error al verificar subordinados:', e);
+    return res.status(500).json({ success: false, error: 'Error interno al verificar subordinados' });
+  }
+  let year = parseInt(req.body.anio || req.query.anio, 10);
+  let month = parseInt(req.body.mes || req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  try {
+    const { sendSubordinateKpiResults } = require('../services/kpiEmail');
+    const result = await sendSubordinateKpiResults({ bossId: user.id, year, month });
+    return res.json({ success: true, count: result.count });
+  } catch (e) {
+    console.error('Error enviando correos al equipo:', e);
+    return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });
+  }
+});
+
+/**
+ * Enviar por correo los resultados de KPIs a los subordinados directos del usuario.
+ * Disponible para cualquier usuario que tenga subordinados directos.
+ * POST /dashboard/email/direct?anio=YYYY&mes=MM
+ * Devuelve JSON con la cantidad de correos enviados o un error si no hay subordinados directos.
+ */
+router.post('/email/direct', isAuth, async (req, res) => {
+  const user = req.session.user;
+  if (!user) return res.status(401).json({ success: false, error: 'No autenticado' });
+  // Verificar que el usuario tenga subordinados directos
+  try {
+    const [directPuestos] = await pool.execute('SELECT id FROM puestos WHERE responde_a_id = ?', [user.puesto_id]);
+    if (!directPuestos || directPuestos.length === 0) {
+      return res.status(403).json({ success: false, error: 'No tiene subordinados directos para enviar' });
+    }
+  } catch (e) {
+    console.error('Error al verificar subordinados directos:', e);
+    return res.status(500).json({ success: false, error: 'Error interno al verificar subordinados directos' });
+  }
+  let year = parseInt(req.body.anio || req.query.anio, 10);
+  let month = parseInt(req.body.mes || req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  try {
+    const { sendDirectSubordinateKpiResults } = require('../services/kpiEmail');
+    const result = await sendDirectSubordinateKpiResults({ bossId: user.id, year, month });
+    return res.json({ success: true, count: result.count });
+  } catch (e) {
+    console.error('Error enviando correos a subordinados directos:', e);
+    return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });
+  }
+});
+
+// Exponer funciones de utilidad en el objeto router para ser reutilizadas en otros módulos.
+// Al asignarlas como propiedades del router conservamos la exportación original
+// (el router mismo) y permitimos que otros archivos requieran estas
+// funciones a través de require('routes/dashboard').buildEmployeeWorkbook, etc.
+router.buildEmployeeWorkbook = buildEmployeeWorkbook;
+router.buildTeamWorkbook = buildTeamWorkbook;
+router.getDefaultPeriod = getDefaultPeriod;
+router.buildSubordinatePuestoIds = buildSubordinatePuestoIds;
 
 
 module.exports = router;

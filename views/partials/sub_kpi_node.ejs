@@ -1,4 +1,45 @@
 <% const empNoFmt = node.empleado.incidencia_id ? String(node.empleado.incidencia_id).padStart(5,'0') : ''; %>
+
+<%
+  /*
+   * Calcula el total ponderado del periodo para este empleado.
+   * Cada KPI tiene un peso (porcentaje) y un puntaje base (40/70/100) según su semáforo.
+   * El total ponderado es la suma de (puntaje * peso/100) de todos los KPIs asignados.
+   */
+  let __totalWeighted = 0;
+  if (Array.isArray(node.kpis)) {
+    node.kpis.forEach(kpi => {
+      // Obtener el resultado del mes seleccionado
+      const resMap = node.resultados && node.resultados[kpi.id];
+      const res = (resMap && resMap[selectedMonth]) || {};
+      // Determinar el puntaje base según el color
+      let __score = null;
+      if (res.color === 'rojo') __score = 40;
+      else if (res.color === 'amarillo') __score = 70;
+      else if (res.color === 'verde') __score = 100;
+      // Peso del KPI (porcentaje)
+      const __pesoVal = (kpi.peso !== null && kpi.peso !== undefined) ? parseFloat(kpi.peso) : 0;
+      if (__score !== null && __pesoVal) {
+        __totalWeighted += (__score * (__pesoVal / 100));
+      }
+    });
+  }
+  // Formatear con máximo 2 decimales y eliminar ceros finales
+  const __totalFormatted = (__totalWeighted || 0).toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+  // Determinar el color general del total ponderado
+  let __generalColorClass = '';
+  let __generalText = '';
+  if (__totalWeighted >= 70) {
+    __generalColorClass = 'bg-success text-light';
+    __generalText = 'Verde';
+  } else if (__totalWeighted >= 40) {
+    __generalColorClass = 'bg-warning text-dark';
+    __generalText = 'Amarillo';
+  } else {
+    __generalColorClass = 'bg-danger text-light';
+    __generalText = 'Rojo';
+  }
+%>
 <div class="card mb-4 ms-3" data-team-card data-emp-name="<%= node.empleado.nombre || '' %>" data-emp-no="<%= empNoFmt %>" data-emp-dept="<%= node.empleado.departamento_nombre || '' %>">
   <% const fmtDate = (d) => { if (!d) return ''; const dd = new Date(d); if (isNaN(dd.getTime())) return ''; return dd.toLocaleDateString('es-MX'); }; %>
   <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
@@ -13,6 +54,9 @@
     <% if (node.empleado.departamento_nombre) { %>
       - <%= node.empleado.departamento_nombre %>
     <% } %>
+    <!-- Mostrar total ponderado y color general al lado del nombre -->
+    <span class="badge bg-light text-dark border ms-2" data-sub-total-weighted><%= __totalFormatted %></span>
+    <span class="badge <%= __generalColorClass %> ms-1" data-sub-total-color><%= __generalText %></span>
   </div>
   <div class="btn-group">
     <button type="button" class="btn btn-sm btn-outline-success dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
@@ -41,7 +85,10 @@
             <th>Objetivo</th>
             <th>Unidad</th>
             <th>Criterios de calificación</th>
-            <th class="text-center">Resultado</th>
+            <!-- Cambiamos "Resultado" por "Calificación" y añadimos columnas de Peso (%) y Puntaje ponderado -->
+            <th class="text-center">Calificación</th>
+            <th class="text-center">Peso&nbsp;(%)</th>
+            <th class="text-center">Puntaje&nbsp;ponderado</th>
             <th>Comentarios</th>
           </tr>
         </thead>
@@ -55,7 +102,20 @@
                if (res.color === 'verde') colorClass = 'bg-success text-light';
                const puntaje = res.color === 'rojo' ? 40 : (res.color === 'amarillo' ? 70 : (res.color === 'verde' ? 100 : ''));
           %>
-          <tr data-kpi-row data-empleado-id="<%= node.empleado.id %>" data-kpi-id="<%= kpi.id %>" data-can-approve="<%= node.canApprove ? '1' : '0' %>">
+          <tr
+            data-kpi-row
+            data-empleado-id="<%= node.empleado.id %>"
+            data-kpi-id="<%= kpi.id %>"
+            data-can-approve="<%= node.canApprove ? '1' : '0' %>"
+            data-score-type="<%= (kpi.score_type || '').toUpperCase() %>"
+            data-direction="<%= (kpi.direction || 'HIGHER_BETTER').toUpperCase() %>"
+            data-threshold-yellow="<%= (kpi.threshold_yellow !== null && kpi.threshold_yellow !== undefined) ? kpi.threshold_yellow : '' %>"
+            data-threshold-green="<%= (kpi.threshold_green !== null && kpi.threshold_green !== undefined) ? kpi.threshold_green : '' %>"
+            data-criterion-red="<%= kpi.criterion_red || '' %>"
+            data-criterion-yellow="<%= kpi.criterion_yellow || '' %>"
+            data-criterion-green="<%= kpi.criterion_green || '' %>"
+            data-weight="<%= (kpi.peso !== null && kpi.peso !== undefined) ? kpi.peso : 0 %>"
+          >
             <td><%= kpi.nombre %></td>
             <td><%= kpi.objetivo %></td>
             <td><%= kpi.unidad %></td>
@@ -146,6 +206,31 @@
                 <% } %>
               </div>
             </td>
+            <!-- Peso (%) -->
+            <td class="text-center">
+              <% if (kpi.peso !== null && kpi.peso !== undefined) { %>
+                <%= Number(kpi.peso).toFixed(2).replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1') %>
+              <% } else { %>
+                —
+              <% } %>
+            </td>
+            <!-- Puntaje ponderado -->
+            <td class="text-center">
+              <%
+                // Calcular puntaje ponderado usando el puntaje (100/70/40) y el peso (%).
+                let __wsClass = 'bg-light text-dark border';
+                let __weighted = '';
+                const __pesoVal = (kpi.peso !== null && kpi.peso !== undefined) ? Number(kpi.peso) : 0;
+                if (puntaje !== '' && __pesoVal) {
+                  const __ws = (Number(puntaje) * (__pesoVal / 100));
+                  __weighted = __ws.toFixed(2).replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
+                  if (res.color === 'rojo') __wsClass = 'bg-danger text-light';
+                  else if (res.color === 'amarillo') __wsClass = 'bg-warning text-dark';
+                  else if (res.color === 'verde') __wsClass = 'bg-success text-light';
+                }
+              %>
+              <span class="badge <%= __wsClass %>"><%= __weighted || '—' %></span>
+            </td>
             <td>
               <form method="post" action="/dashboard/save" data-kpi-comment-form data-kpi-id="<%= kpi.id %>" class="d-flex gap-1 align-items-start">
                 <input type="hidden" name="empleado_id" value="<%= node.empleado.id %>">
@@ -161,6 +246,14 @@
           <% }); %>
         </tbody>
       </table>
+    </div>
+
+    <!-- Resumen de puntajes ponderados del periodo para este colaborador -->
+    <div class="mt-2 d-flex align-items-center flex-wrap gap-2">
+      <!-- Etiqueta de resumen más intuitiva -->
+      <strong>Resultado final del mes:</strong>
+      <span class="badge bg-light text-dark border" data-sub-total-weighted><%= __totalFormatted %></span>
+      <span class="badge <%= __generalColorClass %>" data-sub-total-color><%= __generalText %></span>
     </div>
     <!-- Retroalimentación del periodo (plegable) -->
     <div class="mt-2">

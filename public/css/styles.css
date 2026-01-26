@@ -6,7 +6,9 @@
  */
 
 body {
-  background-color: #f8f9fa;
+  /* Fondo general: un tono muy claro para un look moderno y profesional */
+  background-color: var(--kpi-bg);
+  color: #2c3e50;
 }
 
 .table td,
@@ -90,6 +92,83 @@ tr.employee-row .readlike:disabled {
   background: rgba(220,53,69,.08);
   color: #dc3545;
   border-color: rgba(220,53,69,.25);
+}
+
+/* ==========================================================================
+   Paleta de colores y overrides para un tema más moderno
+   ========================================================================== */
+/* Definimos variables CSS personalizadas para centralizar la paleta.
+   Utilizamos tonos azules y verdes suaves con acentos cálidos para
+   diferenciar secciones sin caer en un tema oscuro. */
+:root {
+  --kpi-primary: #1b4965;     /* Azul profundo para nav y títulos */
+  --kpi-secondary: #5fa8d3;   /* Azul claro para botones y acentos */
+  --kpi-accent: #faae2b;      /* Amarillo cálido para badges y resaltados */
+  --kpi-bg: #f5faff;          /* Fondo muy claro para páginas */
+  --kpi-section: #eaf4fb;     /* Fondo de secciones ligeras */
+  --kpi-header: #dbe9f5;      /* Fondo de encabezados de tabla */
+  --kpi-title: #1b4965;       /* Color de texto principal/títulos */
+}
+
+/* Navbar: usamos la paleta personalizada en lugar del gris oscuro */
+.navbar-dark.bg-dark {
+  background-color: var(--kpi-primary) !important;
+}
+.navbar-dark .navbar-brand,
+.navbar-dark .nav-link,
+.navbar-dark .navbar-text {
+  color: #ffffff !important;
+}
+.navbar-dark .nav-link:hover,
+.navbar-dark .nav-link:focus {
+  color: var(--kpi-accent) !important;
+}
+.navbar-dark .nav-link.active {
+  color: var(--kpi-accent) !important;
+}
+
+/* Version badge: color de fondo basado en nuestro acento */
+.badge-version {
+  background-color: var(--kpi-accent) !important;
+  color: var(--kpi-primary) !important;
+}
+
+/* Botones primarios: tonos más suaves y consistentes con la paleta */
+.btn-primary {
+  background-color: var(--kpi-secondary) !important;
+  border-color: var(--kpi-secondary) !important;
+  color: #ffffff !important;
+}
+.btn-primary:hover,
+.btn-primary:focus {
+  background-color: #4e97c8 !important;
+  border-color: #4e97c8 !important;
+  color: #ffffff !important;
+}
+.btn-outline-light {
+  color: #ffffff !important;
+  border-color: rgba(255,255,255,.8) !important;
+}
+.btn-outline-light:hover,
+.btn-outline-light:focus {
+  background-color: rgba(255,255,255,.2) !important;
+  color: #ffffff !important;
+}
+
+/* Encabezados de tabla: tono claro distintivo */
+.table thead.table-light th {
+  background-color: var(--kpi-header) !important;
+  color: var(--kpi-title) !important;
+}
+
+/* Celdas de secciones alternas: para que cada bloque se diferencie */
+.table tbody tr:nth-child(odd) {
+  background-color: var(--kpi-section);
+}
+
+/* Cambiar la sombra del modo edición para que armonice con el nuevo fondo */
+tr.employee-row.is-editing {
+  background: #e1ecfa;
 }
 /* Acciones más visibles en edición */
 tr.employee-row.is-editing .employee-actions {

@@ -76,9 +76,10 @@
                     <form method="post" action="/puestos/editar/<%= p.id %>">
                       <td><%= idx + 1 %></td>
                       <td>
-                        <input type="text" name="nombre" value="<%= p.puesto %>" class="form-control form-control-sm" required>
+                        <input type="text" name="nombre" value="<%= p.puesto %>" class="form-control form-control-sm" required
+                               <%= isAdmin ? '' : 'disabled' %>>
                         <div class="mt-1">
-                          <select name="departamento_id" class="form-select form-select-sm" required>
+                          <select name="departamento_id" class="form-select form-select-sm" required <%= isAdmin ? '' : 'disabled' %>>
                             <% departamentos.forEach(dep => { %>
                               <option value="<%= dep.id %>" <%= dep.nombre === p.departamento ? 'selected' : '' %>><%= dep.nombre %></option>
                             <% }) %>
@@ -86,7 +87,7 @@
                         </div>
                       </td>
                       <td>
-                        <select name="responde_a_id" class="form-select form-select-sm">
+                        <select name="responde_a_id" class="form-select form-select-sm" <%= isAdmin ? '' : 'disabled' %>>
                           <option value="">Sin jefe directo</option>
                           <% puestos.forEach(j => { %>
                             <% if (j.id !== p.id) { %>
@@ -107,8 +108,16 @@
                         <% } %>
                       </td>
                       <td class="text-nowrap">
+                        <!-- Indicador numérico de KPIs asignados -->
+                        <a href="/puestos/<%= p.id %>" class="badge bg-info text-dark me-1" title="KPIs asignados al puesto">
+                          KPIs: <%= p.kpi_count %>
+                        </a>
                         <a href="/puestos/<%= p.id %>" class="btn btn-sm btn-primary me-1">Asignar KPIs</a>
-                        <button type="submit" class="btn btn-sm btn-success">Guardar</button>
+                        <% if (isAdmin) { %>
+                          <button type="submit" class="btn btn-sm btn-success">Guardar</button>
+                        <% } else { %>
+                          <span class="badge bg-secondary">Solo lectura</span>
+                        <% } %>
                       </td>
                     </form>
                   </tr>
@@ -123,48 +132,48 @@
 </div>
 
 <hr>
-<h3>Crear Departamento</h3>
-<form method="post" action="/puestos/crear-departamento" class="row g-3 mb-4">
-  <div class="col-auto">
-    <input type="text" name="nombre" placeholder="Nombre del departamento" class="form-control" required>
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-success">Agregar departamento</button>
-  </div>
-</form>
+<% if (isAdmin) { %>
+  <h3>Crear Departamento</h3>
+  <form method="post" action="/puestos/crear-departamento" class="row g-3 mb-4">
+    <div class="col-auto">
+      <input type="text" name="nombre" placeholder="Nombre del departamento" class="form-control" required>
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-success">Agregar departamento</button>
+    </div>
+  </form>
 
-<h3>Agregar Sucursal al Departamento OPERACIONES</h3>
-<form method="post" action="/puestos/crear-sucursal" class="row g-3">
-  <div class="col-auto">
-    <input type="text" name="nombre" placeholder="Nombre de la sucursal" class="form-control" required>
-  </div>
-  <div class="col-auto">
-    <button type="submit" class="btn btn-success">Agregar sucursal</button>
-  </div>
-</form>
+  <h3>Agregar Sucursal al Departamento OPERACIONES</h3>
+  <form method="post" action="/puestos/crear-sucursal" class="row g-3">
+    <div class="col-auto">
+      <input type="text" name="nombre" placeholder="Nombre de la sucursal" class="form-control" required>
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-success">Agregar sucursal</button>
+    </div>
+  </form>
 
-<hr>
-<h3>Crear Puesto</h3>
-<form method="post" action="/puestos/crear" class="row g-3">
-  <div class="col-md-3">
-    <input type="text" name="nombre" placeholder="Nombre del puesto" class="form-control" required>
-  </div>
-  <div class="col-md-3">
-    <select name="departamento_id" class="form-select" required>
-      <% departamentos.forEach(dep => { %>
-        <option value="<%= dep.id %>"><%= dep.nombre %></option>
-      <% }) %>
-    </select>
-  </div>
-  <div class="col-md-3">
-    <select name="responde_a_id" class="form-select">
-      <option value="">Sin jefe directo</option>
-      <% puestos.forEach(p => { %>
-        <option value="<%= p.id %>"><%= p.puesto %></option>
-      <% }) %>
-    </select>
-  </div>
-  <% if (isAdmin) { %>
+  <hr>
+  <h3>Crear Puesto</h3>
+  <form method="post" action="/puestos/crear" class="row g-3">
+    <div class="col-md-3">
+      <input type="text" name="nombre" placeholder="Nombre del puesto" class="form-control" required>
+    </div>
+    <div class="col-md-3">
+      <select name="departamento_id" class="form-select" required>
+        <% departamentos.forEach(dep => { %>
+          <option value="<%= dep.id %>"><%= dep.nombre %></option>
+        <% }) %>
+      </select>
+    </div>
+    <div class="col-md-3">
+      <select name="responde_a_id" class="form-select">
+        <option value="">Sin jefe directo</option>
+        <% puestos.forEach(p => { %>
+          <option value="<%= p.id %>"><%= p.puesto %></option>
+        <% }) %>
+      </select>
+    </div>
     <div class="col-md-2">
       <select name="role" class="form-select">
         <% roles.forEach(function(r) { %>
@@ -175,11 +184,11 @@
     <div class="col-md-2">
       <button type="submit" class="btn btn-success">Crear puesto</button>
     </div>
-  <% } else { %>
-    <div class="col-md-3">
-      <button type="submit" class="btn btn-success">Crear puesto</button>
-    </div>
-  <% } %>
-</form>
+  </form>
+<% } else { %>
+  <div class="alert alert-secondary mt-3" role="alert">
+    Las acciones de creación de departamentos, sucursales y puestos están disponibles solo para administradores.
+  </div>
+<% } %>
 
 <%- include('partials/footer') %>

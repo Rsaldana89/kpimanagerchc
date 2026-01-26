@@ -2,17 +2,163 @@
 <h2>Asignar KPIs al puesto <%= puesto.nombre %></h2>
 <p>Seleccione los KPIs que aplican al puesto.  Solo se muestran los indicadores del departamento <strong><%= puesto.departamento %></strong>.</p>
 
-<form method="post" action="/puestos/<%= puesto.id %>">
+<form method="post" action="/puestos/<%= puesto.id %>" id="puestoKpisForm">
   <div class="mb-3">
     <% kpis.forEach(kpi => { %>
-      <div class="form-check">
-        <input class="form-check-input" type="checkbox" name="kpi_ids" value="<%= kpi.id %>" id="kpi_<%= kpi.id %>" <%= kpi.checked ? 'checked' : '' %>>
-        <label class="form-check-label" for="kpi_<%= kpi.id %>"><%= kpi.nombre %></label>
+      <div class="row align-items-center mb-2">
+        <div class="col-auto">
+          <input class="form-check-input" type="checkbox" name="kpi_ids" value="<%= kpi.id %>" id="kpi_<%= kpi.id %>"
+                 <%= kpi.checked ? 'checked' : '' %>
+                 <%= !isAdmin ? 'disabled' : '' %>>
+        </div>
+        <div class="col">
+          <label class="form-check-label" for="kpi_<%= kpi.id %>"><%= kpi.nombre %></label>
+        </div>
+        <div class="col-auto" style="min-width:130px;">
+          <input type="number" step="0.01" min="0" max="100" class="form-control form-control-sm"
+                 name="pesos[<%= kpi.id %>]"
+                 value="<%= kpi.peso || '' %>"
+                 placeholder="Peso (%)"
+                 data-weight-input
+                 <%= (!kpi.checked || !isAdmin) ? 'disabled' : '' %>>
+        </div>
+        <div class="col-auto">
+          <span>%</span>
+        </div>
       </div>
     <% }) %>
   </div>
-  <button type="submit" class="btn btn-primary">Guardar asignaciones</button>
-  <a href="/puestos" class="btn btn-secondary">Cancelar</a>
+  <div class="mb-3">
+    <!-- Mensaje de suma de pesos -->
+    <div id="pesoSumMsg" class="alert alert-warning py-1 small" style="display:none;"></div>
+  </div>
+  <div class="mb-3 d-flex gap-2">
+    <% if (isAdmin) { %>
+      <button type="button" id="autoDistribuirBtn" class="btn btn-secondary">Auto-distribuir</button>
+      <button type="submit" id="guardarBtn" class="btn btn-primary">Guardar asignaciones</button>
+    <% } else { %>
+      <span class="badge bg-secondary">Solo lectura</span>
+    <% } %>
+    <a href="/puestos" class="btn btn-outline-secondary">Cancelar</a>
+  </div>
 </form>
+
+<script>
+// Script para validar y distribuir pesos en la asignación de KPIs
+(function(){
+  const isAdmin = <%= isAdmin ? 'true' : 'false' %>;
+  if (!isAdmin) return;
+  const form = document.getElementById('puestoKpisForm');
+  const checkboxes = document.querySelectorAll('input[type="checkbox"][name="kpi_ids"]');
+  const weightInputs = document.querySelectorAll('input[data-weight-input]');
+  const pesoSumMsg = document.getElementById('pesoSumMsg');
+  const guardarBtn = document.getElementById('guardarBtn');
+  const autoBtn = document.getElementById('autoDistribuirBtn');
+
+  function updateWeightState() {
+    let total = 0;
+    weightInputs.forEach((inp, idx) => {
+      const cb = checkboxes[idx];
+      if (cb.checked) {
+        inp.disabled = false;
+        const v = parseFloat(inp.value);
+        if (!isNaN(v)) total += v;
+      } else {
+        inp.disabled = true;
+        inp.value = '';
+      }
+    });
+    // Mostrar mensaje si la suma no es 100
+    if (Math.abs(total - 100) > 0.01) {
+      pesoSumMsg.style.display = 'block';
+      pesoSumMsg.textContent = `La suma actual de pesos es ${total.toFixed(2)}%. Debe ser 100% para continuar.`;
+      if (guardarBtn) guardarBtn.disabled = true;
+    } else {
+      pesoSumMsg.style.display = 'none';
+      if (guardarBtn) guardarBtn.disabled = false;
+    }
+  }
+  // Asignar eventos
+  checkboxes.forEach(cb => cb.addEventListener('change', updateWeightState));
+  weightInputs.forEach(inp => inp.addEventListener('input', updateWeightState));
+  // Auto-distribuir pesos
+  if (autoBtn) {
+    autoBtn.addEventListener('click', function(){
+      // Obtener los índices de los KPIs seleccionados
+      const selected = [];
+      weightInputs.forEach((inp, idx) => {
+        if (checkboxes[idx].checked) selected.push({ idx });
+      });
+      const n = selected.length;
+      if (n === 0) return;
+      const base = Math.floor((100 / n) * 100) / 100; // base redondeado a 2 decimales (truncado)
+      let sum = 0;
+      selected.forEach((obj, i) => {
+        const inp = weightInputs[obj.idx];
+        if (i === n - 1) {
+          inp.value = (100 - sum).toFixed(2);
+        } else {
+          inp.value = base.toFixed(2);
+          sum += base;
+        }
+      });
+      updateWeightState();
+    });
+  }
+  // Inicializar estado
+  updateWeightState();
+
+  // Asegurar que los inputs habilitados y valores correctos viajen al backend
+  // (algunas configuraciones/proxies pueden omitir campos deshabilitados o no
+  // enviar correctamente objetos anidados). Antes de enviar:
+  // 1) habilitamos temporalmente pesos de los seleccionados
+  // 2) inyectamos hidden inputs como respaldo
+  if (form) {
+    form.addEventListener('submit', function(){
+      // limpiar respaldos anteriores
+      form.querySelectorAll('input[data-hidden-backup="1"]').forEach(n => n.remove());
+
+      checkboxes.forEach((cb, idx) => {
+        const inp = weightInputs[idx];
+        if (cb.checked) {
+          // habilitar para que se envíe
+          inp.disabled = false;
+
+          // respaldo hidden de kpi_ids (por si el checkbox no viaja)
+          const hidId = document.createElement('input');
+          hidId.type = 'hidden';
+          hidId.name = 'kpi_ids';
+          hidId.value = cb.value;
+          hidId.setAttribute('data-hidden-backup', '1');
+          form.appendChild(hidId);
+
+          // Respaldo hidden: NO usamos el mismo nombre "pesos[ID]" para evitar
+          // arrays/duplicados en el backend. Enviamos como "peso_post[ID]".
+          const hid = document.createElement('input');
+          hid.type = 'hidden';
+          hid.name = `peso_post[${cb.value}]`;
+          hid.value = inp.value || '';
+          hid.setAttribute('data-hidden-backup', '1');
+          form.appendChild(hid);
+        }
+      });
+
+      // Debug en consola del navegador (activa con ?debug=1 en la URL)
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('debug') === '1') {
+          const fd = new FormData(form);
+          const obj = {};
+          for (const [k, v] of fd.entries()) {
+            if (!obj[k]) obj[k] = [];
+            obj[k].push(v);
+          }
+          console.log('[DEBUG_FORM_PUESTO_KPIS] FormData:', obj);
+        }
+      } catch (e) {}
+    });
+  }
+})();
+</script>
 
 <%- include('partials/footer') %>

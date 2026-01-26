@@ -131,6 +131,7 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
 
     // Codificar la cadena de búsqueda para los enlaces de paginación
     const searchEncoded = search ? encodeURIComponent(search) : '';
+    const userRole = (req.session.user && req.session.user.role) || '';
     res.render('personal', {
       title: 'Personal',
       empleados: rows,
@@ -144,7 +145,9 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
       search,
       searchEncoded,
       showBajas,
-      deptFilter
+      deptFilter,
+      userRole,
+      isAdmin: userRole === 'admin'
     });
   } catch (err) {
     console.error('Error al listar empleados:', err);
@@ -197,7 +200,7 @@ router.get('/puesto-info/:puestoId', isAuth, requireRole(['admin','manager']), a
  * permite seleccionar una sucursal existente; de lo contrario se
  * establece a NULL.
  */
-router.post('/edit/:id', isAuth, requireRole(['admin','manager']), async (req, res) => {
+router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
   const { id } = req.params;
   // IMPORTANT: usamos nombres de campo distintos a "username" para evitar autofill del navegador
   const { nombre, correo, puesto_id, login_username, password, login_enabled, sucursal_id, auto_generate_login, reset_login_password } = req.body;
@@ -358,7 +361,7 @@ router.post('/edit/:id', isAuth, requireRole(['admin','manager']), async (req, r
  * automáticamente al departamento OPERACIONES y se relaciona con
  * dicha sucursal.
  */
-router.post('/import', isAuth, requireRole(['admin','manager']), async (req, res) => {
+router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     // Consulta a la base de incidencias.  Ajustar el nombre de la tabla y columnas según sea necesario.
     const [remotos] = await incidenciasPool.execute(
@@ -465,7 +468,7 @@ router.post('/import', isAuth, requireRole(['admin','manager']), async (req, res
  * el departamento remoto coincide con una sucursal conocida, se asigna
  * el departamento OPERACIONES y se relaciona con la sucursal.
  */
-router.post('/import-nuevos', isAuth, async (req, res) => {
+router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo, full_name AS nombre, puesto AS puesto, department_name AS departamento FROM personal`
@@ -549,7 +552,7 @@ router.post('/import-nuevos', isAuth, async (req, res) => {
  * sincronizar cambios de puesto en la base de incidencias sin perder
  * modificaciones locales en nombre o credenciales.
  */
-router.post('/import-puestos', isAuth, async (req, res) => {
+router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo, full_name AS nombre, puesto AS puesto, department_name AS departamento FROM personal`
@@ -636,7 +639,7 @@ router.post('/import-puestos', isAuth, async (req, res) => {
  * el empleado se mueve al departamento BAJA, se limpia sucursal y se deshabilita login.
  * No modifica puesto ni nombre.
  */
-router.post('/import-bajas', isAuth, async (req, res) => {
+router.post('/import-bajas', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
     if (!bajaId) {

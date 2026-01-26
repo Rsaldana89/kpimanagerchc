@@ -46,15 +46,20 @@ function toNullableText(val) {
   return s === '' ? null : s;
 }
 
-function isPctUnit(unidad) {
-  return (unidad || '').toString().trim().toLowerCase() === 'porcentaje';
+// Determine if a KPI uses percentage thresholds based on the score_type.  In the new
+// unified model we ignore the "unidad" field provided by the client and derive the
+// behaviour from score_type instead.
+function isPctType(scoreType) {
+  if (!scoreType) return false;
+  return String(scoreType).toUpperCase() === 'PERCENT';
 }
 
 function normalizeKpiPayload(raw) {
   let {
     nombre,
     objetivo,
-    unidad,
+    // unidad is no longer explicitly supplied by the client; it will be derived
+    // from score_type (see below)
 
     rojo_min, rojo_max, amarillo_min, amarillo_max, verde_min, verde_max,
 
@@ -73,13 +78,32 @@ function normalizeKpiPayload(raw) {
   // Normalizar textos
   nombre = toNullableText(nombre);
   objetivo = toNullableText(objetivo);
-  unidad = toNullableText(unidad) || 'numero';
+  // departamento_id puede venir como string; lo normalizamos o nulificamos
   departamento_id = departamento_id ?? null;
 
   // Normalizar tipo de calificación
   score_type = (score_type || 'PERCENT').toString().toUpperCase();
   if (!['PERCENT', 'NUMBER', 'CRITERION'].includes(score_type)) {
     score_type = 'PERCENT';
+  }
+
+  // Derive unidad based on the score_type.  This keeps the old columna
+  // "unidad" in sync even though the UI no longer exposes it.  The values
+  // correspond to the Spanish labels previously used in the select.
+  let unidad;
+  switch (score_type) {
+    case 'PERCENT':
+      unidad = 'porcentaje';
+      break;
+    case 'NUMBER':
+      unidad = 'numero';
+      break;
+    case 'CRITERION':
+      unidad = 'texto';
+      break;
+    default:
+      unidad = 'numero';
+      break;
   }
 
   // Dirección (solo aplica para numérico/porcentaje)
@@ -110,7 +134,7 @@ function normalizeKpiPayload(raw) {
   criterion_green = toNullableText(criterion_green);
 
   // Si es porcentaje, capar a 100 (sobre valores ya numéricos)
-  if (isPctUnit(unidad)) {
+  if (isPctType(score_type)) {
     rojo_min = clampPct100(rojo_min);
     rojo_max = clampPct100(rojo_max);
     amarillo_min = clampPct100(amarillo_min);
@@ -195,12 +219,16 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
     sql += ' ORDER BY d.nombre, k.nombre';
 
     const [kpis] = await pool.execute(sql, params);
+    // Pasamos el rol del usuario para permitir/disabling acciones en la vista
+    const userRole = (req.session.user && req.session.user.role) || '';
     res.render('kpis', {
       title: 'KPIs',
       departamentos,
       kpis,
       selectedDepartamento,
-      search
+      search,
+      userRole,
+      isAdmin: userRole === 'admin'
     });
   } catch (err) {
     console.error('Error al cargar KPIs:', err);
@@ -213,7 +241,7 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
  * POST /kpis/create
  * Crea un nuevo KPI con la información proporcionada por el usuario.
  */
-router.post('/create', isAuth, requireRole(['admin','manager']), async (req, res) => {
+router.post('/create', isAuth, requireRole(['admin']), async (req, res) => {
   const p = normalizeKpiPayload(req.body);
 
   if (!p.nombre || !p.departamento_id) {
@@ -277,7 +305,7 @@ router.post('/create', isAuth, requireRole(['admin','manager']), async (req, res
  * como texto; se convierten a null cuando vienen vacíos para que se
  * almacenen correctamente en la base.
  */
-router.post('/update/:id', isAuth, requireRole(['admin','manager']), async (req, res) => {
+router.post('/update/:id', isAuth, requireRole(['admin']), async (req, res) => {
   const { id } = req.params;
   const p = normalizeKpiPayload(req.body);
 

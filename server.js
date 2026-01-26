@@ -22,8 +22,10 @@ app.set('views', path.join(__dirname, 'views'));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Middleware para parsear solicitudes
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+// extended:true permite parsear objetos anidados (ej: pesos[123]=33.33)
+// limit: '1mb' limita el tamaño del body para evitar payloads grandes
+app.use(bodyParser.urlencoded({ extended: true, limit: '1mb' }));
+app.use(bodyParser.json({ limit: '1mb' }));
 
 // Configuración de la sesión.  Se utiliza un valor secreto definido
 // en el archivo .env.  La opción saveUninitialized=false evita
@@ -56,6 +58,13 @@ const positionRoutes = require('./routes/positions');
 const kpiRoutes = require('./routes/kpis');
 const organigramaRoutes = require('./routes/organigrama');
 
+// Cargar el programador de correos.  Se ejecutará una tarea
+// recurrente para enviar automáticamente los resultados de KPIs el día
+// 10 de cada mes a las 20:00.  Este módulo debe cargarse después de
+// haber inicializado las variables de entorno y antes de iniciar el
+// servidor para que el cron se configure correctamente.
+const { scheduleMonthlyEmails } = require('./services/emailScheduler');
+
 // Registro de rutas
 app.use('/', authRoutes);
 app.use('/dashboard', dashboardRoutes);
@@ -76,4 +85,11 @@ app.get('*', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en el puerto ${PORT}`);
+  // Iniciar tarea programada de correos
+  try {
+    scheduleMonthlyEmails();
+    console.log('Programador de correos iniciado');
+  } catch (e) {
+    console.error('No se pudo iniciar el programador de correos:', e);
+  }
 });

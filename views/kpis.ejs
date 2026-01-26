@@ -2,6 +2,7 @@
 <h2 class="mb-4">Gestión de KPIs</h2>
 
 <h3>Crear un nuevo KPI</h3>
+<% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
 <form method="post" action="/kpis/create" class="row g-3 mb-5" id="createKpiForm">
   <div class="col-md-4">
     <label class="form-label">Nombre del KPI</label>
@@ -11,7 +12,8 @@
     <label class="form-label">Objetivo</label>
     <input type="text" class="form-control" name="objetivo">
   </div>
-  <div class="col-md-2">
+  <!-- La unidad ahora se deriva automáticamente del tipo de calificación.  Ocultamos este campo pero lo mantenemos en el DOM para compatibilidad -->
+  <div class="col-md-2 d-none">
     <label class="form-label">Unidad</label>
     <select name="unidad" class="form-select">
       <option value="numero">Número</option>
@@ -66,7 +68,8 @@
       Para KPIs tipo <strong>Criterio</strong>, define los 3 textos.
     </div>
   </div>
-  <details class="col-12">
+  <!-- Ocultamos los campos legacy que ya no se utilizan -->
+  <details class="col-12" style="display:none;">
     <summary class="small text-muted">Campos legacy (opcional) - ya no se usan para el semáforo</summary>
     <div class="row g-2 mt-1">
       <div class="col-md-2">
@@ -99,6 +102,9 @@
     <button type="submit" class="btn btn-success">Crear KPI</button>
   </div>
 </form>
+<% } else { %>
+  <p class="text-muted">Solo los administradores pueden crear KPIs.</p>
+<% } %>
 
 <hr>
 
@@ -264,7 +270,8 @@
           <td class="kpi-calif-cell">
             <!-- Configuración visible SOLO al editar: unidad / tipo / dirección -->
             <div class="d-flex flex-wrap gap-2 align-items-center mb-1 kpi-calif-config" data-calif-config style="display:none;">
-              <div>
+              <!-- Ocultamos la unidad; se deriva automáticamente a partir del tipo de calificación -->
+              <div class="d-none">
                 <label class="form-label small mb-0">Unidad</label>
                 <select form="<%= formId %>" name="unidad" class="form-select form-select-sm" disabled>
                   <option value="numero" <%= kpi.unidad === 'numero' ? 'selected' : '' %>>Número</option>
@@ -409,12 +416,16 @@
               </div>
             </div>
 
+            <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
             <div class="d-flex flex-column gap-2">
               <button type="button" class="btn btn-outline-secondary btn-sm btn-edit">✏️ Editar</button>
               <button type="submit" class="btn btn-primary btn-sm btn-save" form="<%= formId %>" disabled>Guardar</button>
               <button type="button" class="btn btn-outline-secondary btn-sm btn-cancel d-none">Cancelar</button>
               <span class="badge bg-warning text-dark text-center kpi-row-badge d-none">Editando (sin cambios)</span>
             </div>
+            <% } else { %>
+            <div class="small text-muted">Solo lectura</div>
+            <% } %>
           </td>
         </tr>
       <% }) %>
@@ -484,8 +495,9 @@
     };
 
     const applyPercentageRules = (row) => {
-      const unidad = row.querySelector('select[name="unidad"]')?.value;
-      const isPct = unidad === 'porcentaje';
+      // Determina si es un KPI porcentual en base al campo score_type en lugar de "unidad"
+      const st = row.querySelector('select[name="score_type"]')?.value;
+      const isPct = st === 'PERCENT';
 
       const nums = row.querySelectorAll(
         'input[type="number"][name$="_min"], input[type="number"][name$="_max"], input[type="number"][name="threshold_yellow"], input[type="number"][name="threshold_green"]'
