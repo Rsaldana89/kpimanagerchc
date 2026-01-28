@@ -207,14 +207,28 @@ router.post('/:id(\\d+)', isAuth, requireRole(['admin']), async (req, res) => {
   }
 
   // Si no llegaron kpi_ids, inferirlos por pesos con valor (objeto o plano)
+  // Nota: "pesos" puede venir como req.body.pesos (objeto/array) o como claves
+  // planas "pesos[ID]" / respaldos "peso_post[ID]".
   if (kpi_ids.length === 0) {
     const inferred = new Set();
-    for (const [kpiId, value] of Object.entries(pesos || {})) {
-      if (String(value ?? '').trim() !== '') inferred.add(String(kpiId));
+
+    // 1) Desde req.body.pesos cuando llega como objeto (id => valor)
+    if (rawPesos && !Array.isArray(rawPesos)) {
+      for (const [kpiId, value] of Object.entries(rawPesos)) {
+        if (String(value ?? '').trim() !== '') inferred.add(String(kpiId));
+      }
     }
+
+    // 2) Desde claves planas "pesos[ID]"
     for (const p of flatPesoPairs) {
       if (String(p.value ?? '').trim() !== '') inferred.add(String(p.kpiId));
     }
+
+    // 3) Desde respaldos "peso_post[ID]"
+    for (const p of flatPesoPostPairs) {
+      if (String(p.value ?? '').trim() !== '') inferred.add(String(p.kpiId));
+    }
+
     kpi_ids = Array.from(inferred);
   }
 

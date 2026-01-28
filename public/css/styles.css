@@ -72,6 +72,67 @@ tr.employee-row .readlike:disabled {
   min-width: 84px;
 }
 
+/* Personal: mejor legibilidad (evita que los campos se vean "apelmazados") */
+.personal-table th,
+.personal-table td {
+  padding: .5rem .6rem;
+  vertical-align: middle;
+}
+
+/* Barra horizontal visible en Personal (hace obvio que la tabla se puede recorrer) */
+.personal-table-scroll {
+  overflow-x: scroll !important; /* siempre muestra barra horizontal cuando aplica */
+  overflow-y: hidden;
+  scrollbar-gutter: stable both-edges;
+  padding-bottom: .35rem; /* deja espacio para la barra */
+  cursor: grab;
+}
+.personal-table-scroll:active {
+  cursor: grabbing;
+}
+
+/* Scrollbar más "visible" (WebKit) */
+.personal-table-scroll::-webkit-scrollbar {
+  height: 14px;
+}
+.personal-table-scroll::-webkit-scrollbar-track {
+  background: rgba(0,0,0,.06);
+  border-radius: 999px;
+}
+.personal-table-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,.25);
+  border-radius: 999px;
+}
+.personal-table-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0,0,0,.35);
+}
+
+.personal-table .cell-text {
+  line-height: 1.25;
+}
+
+.personal-table .cell-name {
+  min-width: 280px;
+}
+
+/* Anchos mínimos por columna (mantiene todo visible sin que se aplaste) */
+.personal-table th:nth-child(4),
+.personal-table td:nth-child(4) { min-width: 260px; } /* Puesto */
+.personal-table th:nth-child(5),
+.personal-table td:nth-child(5) { min-width: 180px; } /* Responde a */
+.personal-table th:nth-child(6),
+.personal-table td:nth-child(6) { min-width: 170px; } /* Departamento */
+.personal-table th:nth-child(7),
+.personal-table td:nth-child(7) { min-width: 190px; } /* Sucursal */
+.personal-table th:nth-child(8),
+.personal-table td:nth-child(8) { min-width: 240px; } /* Correo */
+.personal-table th:nth-child(9),
+.personal-table td:nth-child(9) { min-width: 160px; } /* Usuario */
+.personal-table th:nth-child(10),
+.personal-table td:nth-child(10) { min-width: 220px; } /* Contraseña */
+.personal-table th:nth-child(12),
+.personal-table td:nth-child(12) { min-width: 190px; } /* Acciones */
+
 .save-pill {
   display: inline-flex;
   align-items: center;

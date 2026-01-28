@@ -1,6 +1,6 @@
 {
   "name": "kpichc",
-  "version": "0.98.0",
+  "version": "0.99.0-beta",
   "description": "Sistema de gestión de KPIs para CHC",
   "main": "server.js",
   "scripts": {

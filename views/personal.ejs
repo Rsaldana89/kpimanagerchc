@@ -12,7 +12,7 @@
   <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
     <div>
       <div class="fw-semibold">Administración de empleados</div>
-      <div class="text-muted small">Tip: pulsa <strong>Editar</strong> en una fila, modifica y luego <strong>Guardar</strong>. Los cambios se guardan sin recargar (no pierdes tu lugar).</div>
+      <div class="text-muted small">Tip: pulsa <strong>Editar</strong> en una fila, modifica y luego <strong>Guardar</strong>.</div>
     </div>
   </div>
 </div>
@@ -45,14 +45,17 @@
 <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
 <div class="mb-3 d-flex gap-2">
   <form action="/personal/import-nuevos" method="post">
-    <button type="submit" class="btn btn-primary">Actualizar personal desde incidencias</button>
+    <button type="submit" class="btn btn-primary">Actualizar ALTAS (nuevos + correo) desde incidencias</button>
   </form>
   <form action="/personal/import-puestos" method="post">
-    <button type="submit" class="btn btn-secondary">Actualizar puestos desde incidencias</button>
+    <button type="submit" class="btn btn-secondary">Actualizar puesto y correo desde incidencias</button>
   </form>
   <form action="/personal/import-bajas" method="post">
     <button type="submit" class="btn btn-outline-danger">Actualizar BAJAS desde incidencias</button>
   </form>
+  <a href="/personal/db-backup" class="btn btn-outline-dark" title="Descargar respaldo completo de la base de datos">
+    Descargar respaldo BD (.sql)
+  </a>
 </div>
 <% } else { %>
   <div class="mb-3">
@@ -60,8 +63,9 @@
   </div>
 <% } %>
 
-<div class="table-responsive">
-  <table class="table table-bordered table-hover table-sm align-middle">
+<!-- Nota: forzamos scrollbar horizontal visible para que sea obvio que la tabla se puede recorrer -->
+<div class="table-responsive personal-table-scroll" id="personalTableScroll">
+  <table class="table table-bordered table-hover table-sm align-middle personal-table">
     <thead class="table-light">
       <tr>
         <th>#</th>
@@ -86,7 +90,9 @@
             <!-- ID de empleado con padding a 5 dígitos -->
             <td><%= (emp.incidencia_id ? String(emp.incidencia_id).padStart(5, '0') : '') %></td>
             <td>
-              <input type="text" name="nombre" value="<%= emp.nombre %>" class="form-control form-control-sm readlike" style="min-width:240px" required readonly data-editable>
+              <!-- Nombre NO editable (solo lectura). Se envía oculto para conservar en el guardado. -->
+              <input type="hidden" name="nombre" value="<%= emp.nombre %>">
+              <div class="cell-text cell-name"><%= emp.nombre %></div>
             </td>
             <td>
               <select name="puesto_id" class="form-select form-select-sm readlike" required disabled data-editable>
@@ -99,13 +105,13 @@
             </td>
             <!-- Jefe directo (sólo lectura) -->
             <td>
-              <input type="text" class="form-control form-control-sm" value="<%= emp.jefe_nombre || '' %>" readonly data-field="jefe_nombre">
+              <input type="text" class="form-control form-control-sm readlike" value="<%= emp.jefe_nombre || '' %>" readonly data-field="jefe_nombre">
             </td>
             <td>
-              <input type="text" class="form-control form-control-sm" value="<%= emp.departamento_nombre || '' %>" readonly data-field="departamento_nombre">
+              <input type="text" class="form-control form-control-sm readlike" value="<%= emp.departamento_nombre || '' %>" readonly data-field="departamento_nombre">
             </td>
             <td>
-              <select name="sucursal_id" class="form-select form-select-sm readlike" disabled data-editable data-only-ops>
+              <select name="sucursal_id" class="form-select form-select-sm readlike" disabled>
                 <option value="">-- Sin sucursal --</option>
                 <% sucursales.forEach(suc => { %>
                   <option value="<%= suc.id %>" <%= (emp.sucursal_nombre && suc.nombre === emp.sucursal_nombre) ? 'selected' : '' %>><%= suc.nombre %></option>
@@ -338,15 +344,9 @@
       // Reset password button
       row.querySelectorAll('button[data-reset-login]').forEach(b => { b.disabled = !isEditing; });
 
-      // Sucursal: solo editable si OPERACIONES
+      // Sucursal: se sincroniza desde incidencias (solo lectura en Personal)
       const sucSel = row.querySelector('select[name="sucursal_id"]');
-      if (sucSel) {
-        const dept = (row.querySelector('[data-field="departamento_nombre"]') || {}).value || '';
-        const puestoSel = row.querySelector('select[name="puesto_id"]');
-        const puestoTxt = puestoSel ? (puestoSel.options[puestoSel.selectedIndex]?.text || '') : '';
-        const looksOps = String(dept).toUpperCase() === 'OPERACIONES' || String(puestoTxt).toUpperCase().includes('OPERACIONES');
-        sucSel.disabled = !(isEditing && looksOps);
-      }
+      if (sucSel) sucSel.disabled = true;
 
       // Login inputs: en edición se habilitan si Acceso está marcado
       const cb = row.querySelector('input[data-toggle-login]');
@@ -428,7 +428,7 @@
         editBtn.addEventListener('click', () => {
           snapshotRow(row);
           setEditMode(row, true);
-          const focusEl = row.querySelector('input[name="nombre"]');
+          const focusEl = row.querySelector('select[name="puesto_id"], input[name="correo"]');
           if (focusEl) focusEl.focus();
         });
       }
@@ -498,12 +498,12 @@
           if (deptField) deptField.value = data.puesto.departamento_nombre || '';
           if (jefeField) jefeField.value = data.puesto.responde_a_puesto_nombre || '';
 
-          // Sucursal solo si OPERACIONES
+          // Sucursal: solo lectura. Si el nuevo puesto NO es OPERACIONES, limpiamos la sucursal en UI.
           const sucSel = row.querySelector('select[name="sucursal_id"]');
           if (sucSel) {
             const isOps = !!data.puesto.is_operaciones;
-            sucSel.disabled = !isOps;
             if (!isOps) sucSel.value = '';
+            sucSel.disabled = true;
           }
         } catch (e) {
           // Silencioso: UI sigue funcionando aunque falle el fetch
@@ -602,6 +602,40 @@
         await copyToClipboard(t);
         copyPassBtn.classList.add('btn-success');
         setTimeout(() => copyPassBtn.classList.remove('btn-success'), 700);
+      });
+    }
+
+    // Scroll horizontal "por arrastre" en la tabla de Personal
+    // (hace más intuitivo navegar cuando hay muchas columnas)
+    const scroller = document.getElementById('personalTableScroll');
+    if (scroller) {
+      let isDown = false;
+      let startX = 0;
+      let scrollLeft = 0;
+
+      const isInteractive = (el) => !!(el && el.closest && el.closest('input,select,textarea,button,a,label'));
+
+      scroller.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        if (isInteractive(e.target)) return;
+        isDown = true;
+        startX = e.pageX;
+        scrollLeft = scroller.scrollLeft;
+        scroller.style.cursor = 'grabbing';
+      });
+
+      const stop = () => {
+        isDown = false;
+        scroller.style.cursor = '';
+      };
+      scroller.addEventListener('mouseleave', stop);
+      window.addEventListener('mouseup', stop);
+
+      scroller.addEventListener('mousemove', (e) => {
+        if (!isDown) return;
+        e.preventDefault();
+        const dx = e.pageX - startX;
+        scroller.scrollLeft = scrollLeft - dx;
       });
     }
   });

@@ -2,7 +2,7 @@
 <h2>Asignar KPIs al puesto <%= puesto.nombre %></h2>
 <p>Seleccione los KPIs que aplican al puesto.  Solo se muestran los indicadores del departamento <strong><%= puesto.departamento %></strong>.</p>
 
-<form method="post" action="/puestos/<%= puesto.id %>" id="puestoKpisForm">
+<form method="post" action="/puestos/<%= puesto.id %>" id="puestoKpisForm" data-is-admin="<%= isAdmin ? '1' : '0' %>">
   <div class="mb-3">
     <% kpis.forEach(kpi => { %>
       <div class="row align-items-center mb-2">
@@ -46,9 +46,9 @@
 <script>
 // Script para validar y distribuir pesos en la asignación de KPIs
 (function(){
-  const isAdmin = <%= isAdmin ? 'true' : 'false' %>;
-  if (!isAdmin) return;
   const form = document.getElementById('puestoKpisForm');
+  const isAdmin = form?.dataset?.isAdmin === '1';
+  if (!isAdmin) return;
   const checkboxes = document.querySelectorAll('input[type="checkbox"][name="kpi_ids"]');
   const weightInputs = document.querySelectorAll('input[data-weight-input]');
   const pesoSumMsg = document.getElementById('pesoSumMsg');

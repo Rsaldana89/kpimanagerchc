@@ -3,6 +3,10 @@ const router = express.Router();
 const { pool, incidenciasPool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
+const mysql = require('mysql2');
+
+// Escape seguro para generar INSERTs en respaldo SQL
+const sqlEscape = (v) => mysql.escape(v);
 
 // Normaliza strings para comparaciones (trim + UPPER)
 function normUpper(v) {
@@ -471,7 +475,12 @@ router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
 router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     const [remotos] = await incidenciasPool.execute(
-      `SELECT employee_number AS codigo, full_name AS nombre, puesto AS puesto, department_name AS departamento FROM personal`
+      `SELECT employee_number AS codigo,
+              full_name AS nombre,
+              puesto AS puesto,
+              department_name AS departamento,
+              email AS correo
+       FROM personal`
     );
     let nuevos = 0;
     for (const emp of remotos) {
@@ -479,6 +488,7 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
       const nombre = emp.nombre;
       const puestoNombre = emp.puesto;
       const departamentoOrigen = emp.departamento;
+      const correo = emp.correo;
       const depOrigenUpper = normUpper(departamentoOrigen);
       // Verificar si ya existe
       const [existRows] = await pool.execute('SELECT id FROM empleados WHERE incidencia_id = ?', [codigo]);
@@ -529,9 +539,9 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
       }
       // Insertar nuevo empleado con login deshabilitado
       await pool.execute(
-        `INSERT INTO empleados (incidencia_id, nombre, puesto_id, departamento_id, sucursal_id, login_enabled)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-        [codigo, nombre, puestoId, departamentoId, esBaja ? null : sucursalId]
+        `INSERT INTO empleados (incidencia_id, nombre, correo, puesto_id, departamento_id, sucursal_id, login_enabled)
+         VALUES (?, ?, ?, ?, ?, ?, 0)`,
+        [codigo, nombre, correo || null, puestoId, departamentoId, esBaja ? null : sucursalId]
       );
       nuevos++;
     }
@@ -546,28 +556,101 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
 
 /*
  * Ruta POST /personal/import-puestos
- * Actualiza únicamente el puesto y departamento/sucursal de los empleados
- * existentes que coincidan por incidencia_id.  No crea registros
- * nuevos ni modifica otros campos como nombre o correo.  Útil para
- * sincronizar cambios de puesto en la base de incidencias sin perder
- * modificaciones locales en nombre o credenciales.
+ * Sincroniza desde incidencias:
+ *  - Correo: siempre se actualiza para empleados existentes.
+ *  - Puesto/Departamento/Sucursal: SOLO se actualiza si el nombre del puesto
+ *    remoto es diferente al puesto actual del empleado (por nombre).
+ *    Esto evita re-asignar departamento cuando existen puestos duplicados por nombre
+ *    y el usuario cambió manualmente el departamento en KPIs.
  */
 router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
     const [remotos] = await incidenciasPool.execute(
-      `SELECT employee_number AS codigo, full_name AS nombre, puesto AS puesto, department_name AS departamento FROM personal`
+      `SELECT employee_number AS codigo,
+              puesto AS puesto,
+              department_name AS departamento,
+              email AS correo
+       FROM personal`
     );
-    let actualizados = 0;
+    let correosActualizados = 0;
+    let puestosActualizados = 0;
+    let sucursalesActualizadas = 0;
     for (const emp of remotos) {
       const codigo = emp.codigo;
       const puestoNombre = emp.puesto;
       const departamentoOrigen = emp.departamento;
+      const correo = emp.correo;
       const depOrigenUpper = normUpper(departamentoOrigen);
-      // Buscar empleado existente
-      const [existRows] = await pool.execute('SELECT id FROM empleados WHERE incidencia_id = ?', [codigo]);
+      // Buscar empleado existente + su puesto actual (por nombre)
+      const [existRows] = await pool.execute(
+        `SELECT e.id, e.puesto_id, e.departamento_id, e.sucursal_id, e.correo,
+                p.nombre AS puesto_actual_nombre
+         FROM empleados e
+         LEFT JOIN puestos p ON e.puesto_id = p.id
+         WHERE e.incidencia_id = ?
+         LIMIT 1`,
+        [codigo]
+      );
       if (existRows.length === 0) {
         continue; // no actualizar si no existe
       }
+
+      const actual = existRows[0];
+      const puestoActualUpper = normUpper(actual.puesto_actual_nombre);
+      const puestoRemotoUpper = normUpper(puestoNombre);
+      const esBaja = depOrigenUpper.includes('BAJA');
+
+      // ¿En incidencias el "department_name" es una sucursal?
+      // (Si es sucursal, se debe mantener sincronizado sucursal_id incluso cuando el puesto sea el mismo.)
+      let remoteSucursalId = null;
+      let remoteIsSucursal = false;
+      if (!esBaja && departamentoOrigen) {
+        const [sucRowsRemote] = await pool.execute('SELECT id FROM sucursales WHERE nombre = ?', [departamentoOrigen]);
+        if (sucRowsRemote.length > 0) {
+          remoteIsSucursal = true;
+          remoteSucursalId = sucRowsRemote[0].id;
+        }
+      }
+
+      // 1) Siempre actualizar correo (si viene con valor)
+      if (correo !== undefined && correo !== null && String(correo).trim() !== '') {
+        const [rEmail] = await pool.execute(
+          `UPDATE empleados SET correo = ? WHERE incidencia_id = ?`,
+          [String(correo).trim(), codigo]
+        );
+        if (rEmail && typeof rEmail.affectedRows === 'number' && rEmail.affectedRows > 0) {
+          correosActualizados++;
+        }
+      }
+
+      // 2) Si viene como BAJA, mover a BAJA y deshabilitar login (sin tocar puesto)
+      if (esBaja) {
+        const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
+        if (bajaId) {
+          await pool.execute(
+            `UPDATE empleados
+             SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0
+             WHERE incidencia_id = ?`,
+            [bajaId, codigo]
+          );
+        }
+        continue;
+      }
+
+      // 3) Si el puesto (por nombre) es el mismo, NO tocar puesto/departamento.
+      //    EXCEPCIÓN: si en incidencias viene como Sucursal, sí sincronizamos sucursal_id.
+      //    (Evita re-asignaciones de departamento por duplicados de nombre, sin perder cambios de sucursal.)
+      if (puestoActualUpper && puestoRemotoUpper && puestoActualUpper === puestoRemotoUpper) {
+        if (remoteIsSucursal && remoteSucursalId && String(actual.sucursal_id || '') !== String(remoteSucursalId)) {
+          await pool.execute(
+            'UPDATE empleados SET sucursal_id = ? WHERE incidencia_id = ?',
+            [remoteSucursalId, codigo]
+          );
+          sucursalesActualizadas++;
+        }
+        continue;
+      }
+
       // Determinar puesto y departamento locales
       let [puestoRows] = await pool.execute(
         'SELECT id, departamento_id FROM puestos WHERE nombre = ? ORDER BY id LIMIT 1',
@@ -592,42 +675,29 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
           departamentoId = anyPuesto[0].departamento_id;
         }
       }
-      const esBaja = depOrigenUpper.includes('BAJA');
-      let sucursalId = null;
-      if (esBaja) {
-        const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
-        if (bajaId) departamentoId = bajaId;
-      } else {
-        let [sucRows] = await pool.execute('SELECT id FROM sucursales WHERE nombre = ?', [departamentoOrigen]);
-        if (sucRows.length > 0) {
-          sucursalId = sucRows[0].id;
-          const [depOps] = await pool.execute('SELECT id FROM departamentos WHERE nombre = "OPERACIONES"');
-          if (depOps.length > 0) {
-            departamentoId = depOps[0].id;
-          }
+      let sucursalId = remoteIsSucursal ? remoteSucursalId : null;
+
+      // Si es sucursal, forzar departamento OPERACIONES (cuando sí se está actualizando el puesto)
+      if (remoteIsSucursal) {
+        const [depOps] = await pool.execute('SELECT id FROM departamentos WHERE nombre = "OPERACIONES"');
+        if (depOps.length > 0) {
+          departamentoId = depOps[0].id;
         }
       }
-      // Actualizar solo puesto, departamento y sucursal. Si es BAJA, limpiar sucursal y deshabilitar login.
-      if (esBaja) {
-        await pool.execute(
-          `UPDATE empleados
-           SET puesto_id = ?, departamento_id = ?, sucursal_id = NULL, login_enabled = 0
-           WHERE incidencia_id = ?`,
-          [puestoId, departamentoId, codigo]
-        );
-      } else {
-        await pool.execute(
-          `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
-          [puestoId, departamentoId, sucursalId, codigo]
-        );
-      }
-      actualizados++;
+
+      await pool.execute(
+        `UPDATE empleados
+         SET puesto_id = ?, departamento_id = ?, sucursal_id = ?
+         WHERE incidencia_id = ?`,
+        [puestoId, departamentoId, sucursalId, codigo]
+      );
+      puestosActualizados++;
     }
-    req.flash('success', `Se actualizaron los puestos de ${actualizados} empleados`);
+    req.flash('success', `Correos actualizados: ${correosActualizados}. Puestos/dep actualizados: ${puestosActualizados}. Sucursales (puesto igual) actualizadas: ${sucursalesActualizadas}.`);
     return res.redirect('/personal');
   } catch (err) {
     console.error('Error al actualizar puestos desde incidencias:', err);
-    req.flash('error', 'No fue posible actualizar puestos');
+    req.flash('error', 'No fue posible actualizar puesto/correo desde incidencias');
     return res.redirect('/personal');
   }
 });
@@ -684,6 +754,94 @@ router.post('/import-bajas', isAuth, requireRole(['admin']), async (req, res) =>
     console.error('Error al actualizar BAJAS desde incidencias:', err);
     req.flash('error', 'No fue posible actualizar BAJAS');
     return res.redirect('/personal');
+  }
+});
+
+/**
+ * Respaldo completo de la base de datos (SQL).
+ * GET /personal/db-backup
+ *
+ * Nota: se genera un dump en formato .sql (estructura + datos) sin depender
+ * de binarios externos como mysqldump, para que funcione igual en Railway.
+ */
+router.get('/db-backup', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const ts = new Date();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const stamp = `${ts.getFullYear()}-${pad2(ts.getMonth() + 1)}-${pad2(ts.getDate())}_${pad2(ts.getHours())}${pad2(ts.getMinutes())}${pad2(ts.getSeconds())}`;
+    const filename = `kpi_backup_${stamp}.sql`;
+
+    res.setHeader('Content-Type', 'application/sql; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const write = (s) => res.write(s);
+    write(`-- CHC KPI Manager - Respaldo completo\n`);
+    write(`-- Generado: ${ts.toISOString()}\n\n`);
+    write(`SET NAMES utf8mb4;\n`);
+    write(`SET FOREIGN_KEY_CHECKS=0;\n\n`);
+
+    const [tablesRows] = await pool.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
+    if (!tablesRows || tablesRows.length === 0) {
+      write(`-- No se encontraron tablas para respaldar.\n`);
+      write(`SET FOREIGN_KEY_CHECKS=1;\n`);
+      return res.end();
+    }
+
+    const tableNameCol = Object.keys(tablesRows[0]).find(k => k.toLowerCase().startsWith('tables_in'));
+    const tables = tablesRows.map(r => r[tableNameCol]).filter(Boolean);
+
+    const CHUNK = 500;
+    for (const table of tables) {
+      // Estructura
+      const [createRows] = await pool.query(`SHOW CREATE TABLE \`${table}\``);
+      const createSql = createRows && createRows[0] ? (createRows[0]['Create Table'] || createRows[0]['Create View']) : null;
+      write(`\n-- ----------------------------\n`);
+      write(`-- Tabla: ${table}\n`);
+      write(`-- ----------------------------\n`);
+      write(`DROP TABLE IF EXISTS \`${table}\`;\n`);
+      if (createSql) {
+        write(`${createSql};\n`);
+      }
+
+      // Datos
+      const [countRows] = await pool.query(`SELECT COUNT(*) AS c FROM \`${table}\``);
+      const total = countRows && countRows[0] ? Number(countRows[0].c || 0) : 0;
+      if (!total) continue;
+
+      let offset = 0;
+      while (offset < total) {
+        const [rows] = await pool.query(`SELECT * FROM \`${table}\` LIMIT ${CHUNK} OFFSET ${offset}`);
+        if (!rows || rows.length === 0) break;
+
+        const cols = Object.keys(rows[0]);
+        const colList = cols.map(c => `\`${c}\``).join(',');
+        const valuesSql = rows.map(r => {
+          const vals = cols.map(c => {
+            const v = r[c];
+            return v === null || v === undefined ? 'NULL' : sqlEscape(v);
+          }).join(',');
+          return `(${vals})`;
+        }).join(',\n');
+
+        write(`INSERT INTO \`${table}\` (${colList}) VALUES\n${valuesSql};\n`);
+        offset += rows.length;
+      }
+    }
+
+    write(`\nSET FOREIGN_KEY_CHECKS=1;\n`);
+    return res.end();
+  } catch (err) {
+    console.error('Error generando respaldo SQL:', err);
+    // Si ya se empezaron a mandar headers/bytes, solo cerrar.
+    try {
+      if (!res.headersSent) {
+        res.status(500).send('No se pudo generar el respaldo');
+      } else {
+        res.end();
+      }
+    } catch {
+      // ignore
+    }
   }
 });
 

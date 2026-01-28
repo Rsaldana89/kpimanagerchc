@@ -33,21 +33,41 @@ function buildPositionTree(positions) {
   return roots;
 }
 
+// Genera un color HSL estable (pastel) basado en un string (departamento)
+function deptToColor(deptName) {
+  const s = String(deptName || 'SIN_DEPARTAMENTO').toUpperCase();
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i);
+    hash |= 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  // Pastel legible.
+  // Nota: usamos la sintaxis con comas para máxima compatibilidad.
+  return `hsl(${hue}, 55%, 55%)`;
+}
+
 // Genera HTML de lista para el organigrama a partir de un árbol de posiciones
-function buildOrgHtml(nodes) {
+function buildOrgHtml(nodes, depth = 0) {
   let html = '';
   nodes.forEach(node => {
-    html += '<li>';
+    const hasChildren = node.children && node.children.length;
+    const deptColor = deptToColor(node.departamento);
+    const deptSafe = (node.departamento || '').replace(/"/g, '&quot;');
+    html += `<li class="org-node" data-node-id="${node.id}" data-depth="${depth}" data-dept="${deptSafe}" data-has-children="${hasChildren ? 1 : 0}" data-children-count="${hasChildren ? node.children.length : 0}">`;
     // Tarjeta de puesto
-    html += '<div class="org-card">';
+    html += `<div class="org-card" style="--dept-color:${deptColor};">`;
+    if (hasChildren) {
+      html += `<button type="button" class="org-toggle" title="Colapsar/expandir">−</button>`;
+    }
     html += '<strong>' + node.nombre + '</strong>';
     if (node.departamento) {
-      html += '<div class="text-muted small">' + node.departamento + '</div>';
+      html += '<div class="org-meta">' + node.departamento + '</div>';
     }
     html += '</div>';
     // Hijos
     if (node.children && node.children.length) {
-      html += '<ul>' + buildOrgHtml(node.children) + '</ul>';
+      html += '<ul>' + buildOrgHtml(node.children, depth + 1) + '</ul>';
     }
     html += '</li>';
   });
