@@ -229,7 +229,13 @@
                   else if (res.color === 'verde') __wsClass = 'bg-success text-light';
                 }
               %>
-              <span class="badge <%= __wsClass %>"><%= __weighted || '—' %></span>
+              <span
+                class="badge <%= __wsClass %>"
+                data-weighted-score
+                data-ws="<%= __weighted %>"
+              >
+                <%= __weighted || '—' %>
+              </span>
             </td>
             <td>
               <form method="post" action="/dashboard/save" data-kpi-comment-form data-kpi-id="<%= kpi.id %>" class="d-flex gap-1 align-items-start">

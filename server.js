@@ -57,6 +57,7 @@ const employeeRoutes = require('./routes/employees');
 const positionRoutes = require('./routes/positions');
 const kpiRoutes = require('./routes/kpis');
 const organigramaRoutes = require('./routes/organigrama');
+const branchRoutes = require('./routes/branches');
 
 // Cargar el programador de correos.  Se ejecutará una tarea
 // recurrente para enviar automáticamente los resultados de KPIs el día
@@ -72,6 +73,8 @@ app.use('/personal', employeeRoutes);
 app.use('/puestos', positionRoutes);
 app.use('/kpis', kpiRoutes);
 app.use('/organigrama', organigramaRoutes);
+// Rutas para sucursales y asignación a departamentos
+app.use('/', branchRoutes);
 
 // Ruta por defecto: redirige a dashboard si autenticado o a login.
 app.get('*', (req, res) => {

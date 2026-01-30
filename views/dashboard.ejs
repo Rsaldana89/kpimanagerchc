@@ -304,6 +304,15 @@
               <button type="button" class="btn btn-sm btn-outline-success ms-2" data-lock-toggle data-action="approve">✅ Aprobar</button>
             <% } %>
 
+            <%
+              // Mostrar botón para reabrir (enviar a revisión) cuando el KPI está cerrado
+              // y el propio usuario no tiene jefe directo (puede auto-reabrir).  Se usa
+              // el mismo mecanismo de aprobación/revisión que para el equipo.
+              if (isLocked && canApproveSelf) { %>
+              <button type="button" class="btn btn-sm btn-outline-warning ms-2" data-lock-toggle data-action="review">
+                ↩ Reabrir
+              </button>
+            <% } %>
             <% if (isLocked) { %>
               <span class="badge bg-dark ms-1" data-lock-badge title="Aprobado / cerrado">🔒</span>
             <% } %>
@@ -574,18 +583,79 @@
           else scoreBadge.classList.add('bg-light','text-dark','border');
         }
 
-        // Nuevo: recalcular y actualizar puntaje ponderado y total después de guardar
+        // Recalcular y actualizar puntaje ponderado y totales utilizando los valores
+        // devueltos por el backend cuando sea posible.  Si el servidor no envía
+        // puntaje_ponderado ni total_mes_empleado, se usan los cálculos del cliente.
         try {
           const kpiRow = form.closest('tr[data-kpi-row]');
           if (kpiRow) {
-            // Utilizar el valor actual del campo capturado para recalcular
-            const valInput = form.querySelector('[data-kpi-valor]');
-            const rawVal = valInput ? valInput.value : '';
-            updateRowWeighted(kpiRow, rawVal);
-            updateTotalSummary();
-            // También actualizar el total ponderado de la tarjeta de equipo (si corresponde)
+            // Actualizar el puntaje ponderado de la fila
+            const wsBadge = kpiRow.querySelector('[data-weighted-score]');
+            if (data && Object.prototype.hasOwnProperty.call(data, 'puntaje_ponderado') && wsBadge) {
+              const wsVal = data.puntaje_ponderado;
+              if (wsVal === null || wsVal === '' || wsVal === undefined) {
+                wsBadge.textContent = '—';
+                wsBadge.dataset.ws = '';
+              } else {
+                wsBadge.textContent = String(wsVal);
+                wsBadge.dataset.ws = String(wsVal);
+              }
+              // Actualizar clases según color devuelto
+              wsBadge.classList.remove('bg-danger','bg-warning','bg-success','bg-light','text-dark','text-light','border');
+              if (data.color === 'rojo') wsBadge.classList.add('bg-danger','text-light');
+              else if (data.color === 'amarillo') wsBadge.classList.add('bg-warning','text-dark');
+              else if (data.color === 'verde') wsBadge.classList.add('bg-success','text-light');
+              else wsBadge.classList.add('bg-light','text-dark','border');
+            } else if (wsBadge) {
+              // Fallback: calcular en cliente cuando no se recibió el puntaje
+              const valInput = form.querySelector('[data-kpi-valor]');
+              const rawVal = valInput ? valInput.value : '';
+              updateRowWeighted(kpiRow, rawVal);
+            }
+            // Actualizar totales y semáforo para el colaborador (tarjeta de equipo) o para mí
             const card = kpiRow.closest('[data-team-card]');
-            if (card) updateTeamMemberSummary(card);
+            if (card && data && Object.prototype.hasOwnProperty.call(data, 'total_mes_empleado')) {
+              const tot = data.total_mes_empleado;
+              const colorRes = data.color_resultado_mes;
+              // Total para el colaborador
+              card.querySelectorAll('[data-sub-total-weighted]').forEach(function(el){
+                el.textContent = (tot === null || tot === undefined || tot === '') ? '—' : String(tot);
+              });
+              card.querySelectorAll('[data-sub-total-color]').forEach(function(el){
+                let cls = 'badge ';
+                let txt = '';
+                if (colorRes === 'verde') { cls += 'bg-success text-light'; txt = 'Verde'; }
+                else if (colorRes === 'amarillo') { cls += 'bg-warning text-dark'; txt = 'Amarillo'; }
+                else if (colorRes === 'rojo') { cls += 'bg-danger text-light'; txt = 'Rojo'; }
+                else { cls += 'bg-light text-dark border'; txt = ''; }
+                el.className = cls;
+                el.textContent = txt;
+              });
+            } else if (!card && data && Object.prototype.hasOwnProperty.call(data, 'total_mes_empleado')) {
+              // Actualizar mi propio total ponderado
+              const tot = data.total_mes_empleado;
+              const colorRes = data.color_resultado_mes;
+              const totSpan = document.querySelector('[data-total-weighted]');
+              const colSpan = document.querySelector('[data-total-color]');
+              if (totSpan) totSpan.textContent = (tot === null || tot === undefined || tot === '') ? '—' : String(tot);
+              if (colSpan) {
+                let cls = 'badge ';
+                let txt = '';
+                if (colorRes === 'verde') { cls += 'bg-success text-light'; txt = 'Verde'; }
+                else if (colorRes === 'amarillo') { cls += 'bg-warning text-dark'; txt = 'Amarillo'; }
+                else if (colorRes === 'rojo') { cls += 'bg-danger text-light'; txt = 'Rojo'; }
+                else { cls += 'bg-light text-dark border'; txt = ''; }
+                colSpan.className = cls;
+                colSpan.textContent = txt;
+              }
+            } else {
+              // Fallback: usar cálculo en cliente cuando no se recibieron totales
+              if (!card) {
+                updateTotalSummary();
+              } else {
+                updateTeamMemberSummary(card);
+              }
+            }
           }
         } catch (ex) {
           console.error('Error al actualizar puntaje ponderado:', ex);

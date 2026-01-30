@@ -33,6 +33,18 @@ router.get('/', isAuth, requireRole(['admin', 'manager']), async (req, res) => {
     // Obtener departamentos y sucursales para formularios de creación
     const [departamentos] = await pool.execute('SELECT id, nombre FROM departamentos ORDER BY nombre');
     const [sucursales] = await pool.execute('SELECT id, nombre FROM sucursales ORDER BY nombre');
+
+    // Determinar el ID del departamento OPERACIONES (si existe).  Esto se utiliza en la vista
+    // para permitir la asignación de sucursales al departamento OPERACIONES.
+    let operacionesDeptId = null;
+    if (Array.isArray(departamentos)) {
+      for (const dep of departamentos) {
+        if (dep && dep.nombre && dep.nombre.toUpperCase() === 'OPERACIONES') {
+          operacionesDeptId = dep.id;
+          break;
+        }
+      }
+    }
     res.render('puestos', {
       title: 'Puestos',
       puestos,
@@ -40,7 +52,8 @@ router.get('/', isAuth, requireRole(['admin', 'manager']), async (req, res) => {
       sucursales,
       roles: ['admin', 'manager', 'user'],
       userRole: req.session.user.role,
-      isAdmin: req.session.user && req.session.user.role === 'admin'
+      isAdmin: req.session.user && req.session.user.role === 'admin',
+      operacionesDeptId
     });
   } catch (err) {
     console.error('Error al cargar puestos:', err);

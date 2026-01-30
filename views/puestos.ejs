@@ -3,20 +3,40 @@
 
 <p>A continuación se listan todos los puestos configurados en el sistema.  Puede editar el nombre del puesto, su departamento y a quién responde directamente.  También puede hacer clic en "Asignar KPIs" para definir qué indicadores aplican a cada puesto.  En la parte inferior puede crear nuevos departamentos, agregar sucursales al departamento OPERACIONES o crear un puesto nuevo.</p>
 
-<% 
-  // Agrupar puestos por departamento para mostrar secciones más claras
+<%
+  // Construir un mapa de departamentos para agrupar puestos.  Incluir
+  // explícitamente todos los departamentos existentes (excepto BAJA) de modo
+  // que se muestren incluso si no tienen puestos asignados.  También
+  // incluir un grupo "SIN DEPARTAMENTO" para puestos sin departamento.
   const deptMap = {};
+  if (Array.isArray(departamentos)) {
+    departamentos.forEach(dep => {
+      const name = (dep && dep.nombre) ? dep.nombre : '';
+      if (name && name.toUpperCase() !== 'BAJA') {
+        deptMap[name] = [];
+      }
+    });
+  }
+  // Grupo por defecto para puestos sin departamento o con departamento BAJA
+  deptMap['SIN DEPARTAMENTO'] = deptMap['SIN DEPARTAMENTO'] || [];
+  // Colocar cada puesto en su grupo correspondiente
   puestos.forEach(p => {
-    const dep = p.departamento || 'SIN DEPARTAMENTO';
-    if (!deptMap[dep]) deptMap[dep] = [];
-    deptMap[dep].push(p);
+    let depName = p.departamento || 'SIN DEPARTAMENTO';
+    // Si el puesto pertenece a BAJA, lo agrupamos en SIN DEPARTAMENTO para no mostrar BAJA
+    if (depName && depName.toUpperCase() === 'BAJA') {
+      depName = 'SIN DEPARTAMENTO';
+    }
+    if (!deptMap[depName]) {
+      deptMap[depName] = [];
+    }
+    deptMap[depName].push(p);
   });
-
-  // Orden sugerido (si existe). El resto se ordena alfabéticamente.
+  // Determinar el orden de los departamentos.  Se prioriza un orden
+  // predefinido y el resto se ordena alfabéticamente.
   const preferredOrder = ['DIRECCION', 'DIRECCIÓN', 'EYE', 'SISTEMAS', 'CAPITAL HUMANO', 'OPERACIONES'];
   const deptNames = Object.keys(deptMap).sort((a, b) => {
-    const ia = preferredOrder.indexOf(a);
-    const ib = preferredOrder.indexOf(b);
+    const ia = preferredOrder.indexOf(a.toUpperCase());
+    const ib = preferredOrder.indexOf(b.toUpperCase());
     if (ia !== -1 || ib !== -1) {
       if (ia === -1) return 1;
       if (ib === -1) return -1;
@@ -89,11 +109,18 @@
                       <td>
                         <select name="responde_a_id" class="form-select form-select-sm" <%= isAdmin ? '' : 'disabled' %>>
                           <option value="">Sin jefe directo</option>
-                          <% puestos.forEach(j => { %>
-                            <% if (j.id !== p.id) { %>
-                              <option value="<%= j.id %>" <%= (p.responde_id && j.id === p.responde_id) ? 'selected' : '' %>><%= j.puesto %></option>
-                            <% } %>
-                          <% }) %>
+                          <% 
+                            // Ordenar puestos alfabéticamente por nombre de puesto para mostrar en el select
+                            const sortedBosses = puestos
+                              .filter(j => j.id !== p.id) // no permitir que un puesto se auto-se asigne como jefe
+                              .slice()
+                              .sort((a,b) => (a.puesto || '').localeCompare((b.puesto || ''), 'es'));
+                            sortedBosses.forEach(j => { %>
+                              <option value="<%= j.id %>" <%= (p.responde_id && j.id === p.responde_id) ? 'selected' : '' %>>
+                                <%= j.puesto %>
+                                <% if (j.departamento) { %> - <%= j.departamento %> <% } %>
+                              </option>
+                          <% }); %>
                         </select>
                       </td>
                       <td>
@@ -143,15 +170,48 @@
     </div>
   </form>
 
-  <h3>Agregar Sucursal al Departamento OPERACIONES</h3>
-  <form method="post" action="/puestos/crear-sucursal" class="row g-3">
-    <div class="col-auto">
-      <input type="text" name="nombre" placeholder="Nombre de la sucursal" class="form-control" required>
+  <h3>Asignar sucursales al Departamento OPERACIONES</h3>
+  <% if (typeof operacionesDeptId !== 'undefined' && operacionesDeptId) { %>
+    <div id="branch-management" data-dept-id="<%= operacionesDeptId %>">
+      <div class="row row-cols-lg-auto g-2 align-items-center">
+        <div class="col-12 col-lg-6">
+          <select id="branch-select" class="form-select form-select-sm">
+            <option value="">Selecciona una sucursal...</option>
+            <% sucursales.forEach(function(s){ %>
+              <option value="<%= s.id %>"><%= s.nombre %></option>
+            <% }); %>
+          </select>
+        </div>
+        <div class="col-12 col-lg-auto">
+          <button type="button" class="btn btn-success btn-sm" id="add-branch-btn">Agregar</button>
+        </div>
+      </div>
+      <div class="mt-2">
+        <table class="table table-sm table-bordered mb-2">
+          <thead>
+            <tr><th>Sucursal</th><th class="text-center" style="width:60px;">Acción</th></tr>
+          </thead>
+          <tbody id="assigned-branches-list">
+            <!-- contenido generado por JS -->
+          </tbody>
+        </table>
+      </div>
+      <!-- Formulario opcional para crear una nueva sucursal si no existe -->
+      <div class="mt-3">
+        <form method="post" action="/puestos/crear-sucursal" class="row g-2 align-items-center">
+          <div class="col-md-6">
+            <input type="text" name="nombre" placeholder="Nueva sucursal" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-auto">
+            <button type="submit" class="btn btn-secondary btn-sm">Crear sucursal</button>
+          </div>
+        </form>
+        <small class="text-muted">Si la sucursal no existe, puede crearla aquí y asignarla después.</small>
+      </div>
     </div>
-    <div class="col-auto">
-      <button type="submit" class="btn btn-success">Agregar sucursal</button>
-    </div>
-  </form>
+  <% } else { %>
+    <div class="alert alert-warning">No se encontró el departamento OPERACIONES. Verifique que exista en la base de datos.</div>
+  <% } %>
 
   <hr>
   <h3>Crear Puesto</h3>
@@ -169,9 +229,15 @@
     <div class="col-md-3">
       <select name="responde_a_id" class="form-select">
         <option value="">Sin jefe directo</option>
-        <% puestos.forEach(p => { %>
-          <option value="<%= p.id %>"><%= p.puesto %></option>
-        <% }) %>
+        <% 
+          // Ordenar puestos alfabéticamente por nombre para el selector de jefe directo al crear
+          const sortedBossesCreate = puestos.slice().sort((a,b) => (a.puesto || '').localeCompare((b.puesto || ''), 'es'));
+          sortedBossesCreate.forEach(function(p) { %>
+          <option value="<%= p.id %>">
+            <%= p.puesto %>
+            <% if (p.departamento) { %> - <%= p.departamento %> <% } %>
+          </option>
+        <% }); %>
       </select>
     </div>
     <div class="col-md-2">
@@ -185,6 +251,79 @@
       <button type="submit" class="btn btn-success">Crear puesto</button>
     </div>
   </form>
+
+    <!-- Script para gestionar sucursales asignadas al departamento OPERACIONES -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const container = document.getElementById('branch-management');
+      if (!container) return;
+      const deptId = container.getAttribute('data-dept-id');
+      if (!deptId) return;
+      const listBody = document.getElementById('assigned-branches-list');
+      const selectEl = document.getElementById('branch-select');
+      const addBtn = document.getElementById('add-branch-btn');
+      async function loadAssigned() {
+        try {
+          const resp = await fetch('/departments/' + deptId + '/branches');
+          const data = await resp.json();
+          listBody.innerHTML = '';
+          (data.branches || []).forEach(function(br) {
+            const tr = document.createElement('tr');
+            const tdName = document.createElement('td');
+            tdName.textContent = br.nombre || '';
+            const tdAction = document.createElement('td');
+            tdAction.className = 'text-center';
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'btn btn-sm btn-outline-danger';
+            delBtn.setAttribute('data-branch-id', br.id);
+            delBtn.innerHTML = '🗑️';
+            tdAction.appendChild(delBtn);
+            tr.appendChild(tdName);
+            tr.appendChild(tdAction);
+            listBody.appendChild(tr);
+          });
+        } catch (e) {
+          console.error('No se pudieron cargar las sucursales asignadas:', e);
+        }
+      }
+      if (addBtn) {
+        addBtn.addEventListener('click', async function() {
+          const branchId = selectEl.value;
+          if (!branchId) return;
+          addBtn.disabled = true;
+          try {
+            await fetch('/departments/' + deptId + '/branches', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ branchId: branchId })
+            });
+          } catch (e) {
+            console.error('Error al asignar sucursal:', e);
+          }
+          addBtn.disabled = false;
+          selectEl.value = '';
+          loadAssigned();
+        });
+      }
+      listBody.addEventListener('click', async function(ev) {
+        const btn = ev.target.closest('button[data-branch-id]');
+        if (!btn) return;
+        const id = btn.getAttribute('data-branch-id');
+        btn.disabled = true;
+        try {
+          await fetch('/departments/' + deptId + '/branches/' + id, { method: 'DELETE' });
+        } catch (e) {
+          console.error('Error al eliminar sucursal:', e);
+        }
+        loadAssigned();
+      });
+      // Cargar lista inicial
+      loadAssigned();
+    });
+    </script>
 <% } else { %>
   <div class="alert alert-secondary mt-3" role="alert">
     Las acciones de creación de departamentos, sucursales y puestos están disponibles solo para administradores.

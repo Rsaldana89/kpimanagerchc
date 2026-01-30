@@ -613,7 +613,72 @@ router.post('/save', isAuth, async (req, res) => {
     }
     // Si la petición viene vía fetch/AJAX, devolver JSON para evitar recargar el dashboard
     if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
-      return res.json({ ok: true, color: resultadoColor || null, puntaje: score });
+      // Calcular valores adicionales para puntaje ponderado y total del mes cuando sea posible.
+      let puntajePonderado = null;
+      let totalMesEmpleado = null;
+      let colorResultadoMes = null;
+      try {
+        // Solo calcular si existe un score (para este KPI) y si existe un puesto asociado
+        // Se requiere el puesto del empleado para conocer el peso de cada KPI
+        const [empInfo] = await pool.execute(
+          'SELECT puesto_id FROM empleados WHERE id = ? LIMIT 1',
+          [targetEmployeeId]
+        );
+        const empPuestoId = (empInfo.length ? empInfo[0].puesto_id : null);
+        if (empPuestoId) {
+          // Obtener el peso de este KPI
+          const [pesoRows] = await pool.execute(
+            'SELECT peso FROM puesto_kpis WHERE puesto_id = ? AND kpi_id = ? LIMIT 1',
+            [empPuestoId, kpi_id]
+          );
+          const pesoVal = (pesoRows.length ? parseFloat(pesoRows[0].peso) : null);
+          if (score !== null && pesoVal && !isNaN(pesoVal)) {
+            const pponder = score * (pesoVal / 100);
+            // Redondear a 2 decimales
+            puntajePonderado = Number(pponder.toFixed(2));
+          }
+          // Calcular el total ponderado del mes para el empleado
+          // Obtener definiciones y pesos de todos los KPIs asignados a este puesto
+          const [defs] = await pool.execute(
+            `SELECT pk.kpi_id, pk.peso, k.score_type, k.direction, k.threshold_yellow,
+                    k.threshold_green, k.criterion_red, k.criterion_yellow, k.criterion_green
+             FROM puesto_kpis pk
+             JOIN kpis k ON k.id = pk.kpi_id
+             WHERE pk.puesto_id = ?`,
+            [empPuestoId]
+          );
+          // Obtener valores capturados para este empleado en el mes
+          const [resVals] = await pool.execute(
+            'SELECT kpi_id, valor, color FROM kpi_resultados WHERE empleado_id = ? AND anio = ? AND mes = ?',
+            [targetEmployeeId, anio, mes]
+          );
+          const valMap = new Map();
+          resVals.forEach(r => {
+            valMap.set(Number(r.kpi_id), r.valor);
+          });
+          let totalAcc = 0;
+          defs.forEach(d => {
+            const w = parseFloat(d.peso);
+            if (!w || isNaN(w)) return;
+            // Valor capturado (puede ser null)
+            const rawVal = valMap.has(Number(d.kpi_id)) ? valMap.get(Number(d.kpi_id)) : null;
+            // Calcular color/score para este KPI
+            const { score: sc } = scoreKpi(d, rawVal);
+            if (sc !== null && !isNaN(sc)) {
+              totalAcc += sc * (w / 100);
+            }
+          });
+          // Guardar total con hasta 2 decimales
+          totalMesEmpleado = Number(totalAcc.toFixed(2));
+          // Determinar color general
+          if (totalAcc >= 70) colorResultadoMes = 'verde';
+          else if (totalAcc >= 40) colorResultadoMes = 'amarillo';
+          else colorResultadoMes = 'rojo';
+        }
+      } catch (calcErr) {
+        console.error('Error calculando puntajes ponderados:', calcErr);
+      }
+      return res.json({ ok: true, color: resultadoColor || null, puntaje: score, puntaje_ponderado: puntajePonderado, total_mes_empleado: totalMesEmpleado, color_resultado_mes: colorResultadoMes });
     }
 
     req.flash('success', 'Resultado guardado correctamente');
@@ -719,8 +784,14 @@ async function sendToReviewHandler(req, res) {
       return res.status(403).json({ ok: false, error: 'Sin permisos' });
     }
 
+    // Si el usuario no es admin ni manager y está intentando enviarse a revisión a sí mismo,
+    // permitirlo únicamente si NO tiene jefe directo.  De lo contrario, bloquear.
     if ((user.role !== 'admin' && user.role !== 'manager') && (targetEmployeeId === user.id)) {
-      return res.status(403).json({ ok: false, error: 'No puedes enviarte a revisión a ti mismo.' });
+      // Verificar si el empleado tiene jefe directo
+      const noBoss = await employeeHasNoDirectBoss(user.id);
+      if (!noBoss) {
+        return res.status(403).json({ ok: false, error: 'No puedes enviarte a revisión a ti mismo.' });
+      }
     }
 
     const motivo = (revision_motivo || '').toString().trim().slice(0, 255);
