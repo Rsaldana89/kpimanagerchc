@@ -648,6 +648,36 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
           );
           sucursalesActualizadas++;
         }
+        // Para puestos iguales, normalmente no actualizamos departamento.
+        // Sin embargo, para ciertos departamentos que inician con "EYE", debemos mover al empleado a ese
+        // departamento si el nombre del departamento en incidencias es uno de los permitidos y difiere
+        // del departamento actual.  Esto resuelve el caso de puestos duplicados que cambian de área
+        // dentro de EYE.
+        try {
+          const eyeList = [
+            'EYE QUESOS FRESCOS',
+            'EYE CONVERSION 1ER TURNO',
+            'EYE CONVERSION 2DO TURNO',
+            'EYE TORTILLAS',
+            'EYE ADMINISTRACION',
+            'EYE CONTROL PRODUCCION'
+          ];
+          const depNameUpper = depOrigenUpper;
+          if (eyeList.includes(depNameUpper)) {
+            const newDeptId = await ensureDepartamentoIdByNombreUpper(depNameUpper);
+            if (newDeptId && String(newDeptId) !== String(actual.departamento_id)) {
+              // Solo actualiza el departamento; mantiene puesto_id igual
+              await pool.execute(
+                'UPDATE empleados SET departamento_id = ? WHERE incidencia_id = ?',
+                [newDeptId, codigo]
+              );
+              puestosActualizados++;
+            }
+            // Nota: no eliminamos sucursal_id; solo actualizamos departamento si necesario
+          }
+        } catch (errEye) {
+          console.error('Error al actualizar departamento EYE:', errEye);
+        }
         continue;
       }
 
