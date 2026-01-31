@@ -377,10 +377,11 @@
       const totalDisplay = _total.toFixed(2).replace(/\.0+$/,'').replace(/(\.\d*[1-9])0+$/,'$1');
       let generalColorClass = '';
       let generalText = '';
-      if (_total >= 70) {
+      // Ajuste de umbrales: rojo hasta 40.99, amarillo de 41 a 70.99, verde desde 71
+      if (_total >= 71) {
         generalColorClass = 'bg-success text-light';
         generalText = 'Verde';
-      } else if (_total >= 40) {
+      } else if (_total >= 41) {
         generalColorClass = 'bg-warning text-dark';
         generalText = 'Amarillo';
       } else {
@@ -784,11 +785,19 @@
       }
       if (colorSpan) {
         // Determinar color general
+        // Nuevos umbrales: rojo <= 40.99, amarillo 41-70.99, verde >= 71
         let genClass = '';
         let genText = '';
-        if (total >= 70) { genClass = 'bg-success text-light'; genText = 'Verde'; }
-        else if (total >= 40) { genClass = 'bg-warning text-dark'; genText = 'Amarillo'; }
-        else { genClass = 'bg-danger text-light'; genText = 'Rojo'; }
+        if (total >= 71) {
+          genClass = 'bg-success text-light';
+          genText = 'Verde';
+        } else if (total >= 41) {
+          genClass = 'bg-warning text-dark';
+          genText = 'Amarillo';
+        } else {
+          genClass = 'bg-danger text-light';
+          genText = 'Rojo';
+        }
         // Limpiar clases previas excepto 'badge'
         colorSpan.className = 'badge ' + genClass;
         colorSpan.textContent = genText;
@@ -818,11 +827,19 @@
       // Formatear el total con hasta 2 decimales sin ceros extra
       const formatted = total.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
       // Determinar color general según el total ponderado
+      // Nuevos umbrales: rojo hasta 40.99, amarillo 41-70.99, verde desde 71
       let genClass = '';
       let genText = '';
-      if (total >= 70) { genClass = 'bg-success text-light'; genText = 'Verde'; }
-      else if (total >= 40) { genClass = 'bg-warning text-dark'; genText = 'Amarillo'; }
-      else { genClass = 'bg-danger text-light'; genText = 'Rojo'; }
+      if (total >= 71) {
+        genClass = 'bg-success text-light';
+        genText = 'Verde';
+      } else if (total >= 41) {
+        genClass = 'bg-warning text-dark';
+        genText = 'Amarillo';
+      } else {
+        genClass = 'bg-danger text-light';
+        genText = 'Rojo';
+      }
       // Actualizar las insignias de total ponderado
       card.querySelectorAll('[data-sub-total-weighted]').forEach(el => {
         el.textContent = formatted;
@@ -834,32 +851,33 @@
       });
     }
 
-    // Delegación para actualizar puntajes en tiempo real al capturar valor del KPI
+    // Delegación para actualizar el color del campo en tiempo real al capturar valor del KPI.
+    // Para evitar confusión, el puntaje ponderado y los totales no se recalculan hasta que se presione
+    // la palomita (submit).  Solo se actualiza la clase de color del input.
+    function updateInputColorOnly(row, rawValue) {
+      if (!row) return;
+      const { color } = computeKpiScore(row, rawValue);
+      const inputEl = row.querySelector('[data-kpi-valor]');
+      if (inputEl) {
+        inputEl.classList.remove('bg-danger','bg-warning','bg-success','text-light');
+        if (color === 'rojo') inputEl.classList.add('bg-danger','text-light');
+        else if (color === 'amarillo') inputEl.classList.add('bg-warning');
+        else if (color === 'verde') inputEl.classList.add('bg-success','text-light');
+      }
+    }
     document.addEventListener('input', function(ev) {
       const inp = ev.target;
       if (!inp || !inp.matches('[data-kpi-valor]')) return;
-      const form = inp.closest('form[data-kpi-form]');
-      if (!form) return;
       const row = inp.closest('tr[data-kpi-row]');
       if (!row) return;
-      updateRowWeighted(row, inp.value);
-      updateTotalSummary();
-      // También actualiza el total ponderado de la tarjeta de equipo (si aplica)
-      const card = row.closest('[data-team-card]');
-      if (card) updateTeamMemberSummary(card);
+      updateInputColorOnly(row, inp.value);
     });
     document.addEventListener('change', function(ev) {
       const inp = ev.target;
       if (!inp || !inp.matches('[data-kpi-valor]')) return;
-      const form = inp.closest('form[data-kpi-form]');
-      if (!form) return;
       const row = inp.closest('tr[data-kpi-row]');
       if (!row) return;
-      updateRowWeighted(row, inp.value);
-      updateTotalSummary();
-      // También actualiza el total ponderado de la tarjeta de equipo (si aplica)
-      const card = row.closest('[data-team-card]');
-      if (card) updateTeamMemberSummary(card);
+      updateInputColorOnly(row, inp.value);
     });
 
     // Actualizar puntajes ponderados después de guardar un KPI via AJAX

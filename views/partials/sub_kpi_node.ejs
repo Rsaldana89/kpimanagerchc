@@ -29,10 +29,11 @@
   // Determinar el color general del total ponderado
   let __generalColorClass = '';
   let __generalText = '';
-  if (__totalWeighted >= 70) {
+  // Ajuste de umbrales para semáforo general: rojo hasta 40.99, amarillo 41-70.99, verde desde 71
+  if (__totalWeighted >= 71) {
     __generalColorClass = 'bg-success text-light';
     __generalText = 'Verde';
-  } else if (__totalWeighted >= 40) {
+  } else if (__totalWeighted >= 41) {
     __generalColorClass = 'bg-warning text-dark';
     __generalText = 'Amarillo';
   } else {

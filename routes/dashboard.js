@@ -671,9 +671,14 @@ router.post('/save', isAuth, async (req, res) => {
           // Guardar total con hasta 2 decimales
           totalMesEmpleado = Number(totalAcc.toFixed(2));
           // Determinar color general
-          if (totalAcc >= 70) colorResultadoMes = 'verde';
-          else if (totalAcc >= 40) colorResultadoMes = 'amarillo';
-          else colorResultadoMes = 'rojo';
+          // Ajuste de umbrales: rojo hasta 40.99, amarillo de 41 a 70.99, verde desde 71
+          if (totalAcc >= 71) {
+            colorResultadoMes = 'verde';
+          } else if (totalAcc >= 41) {
+            colorResultadoMes = 'amarillo';
+          } else {
+            colorResultadoMes = 'rojo';
+          }
         }
       } catch (calcErr) {
         console.error('Error calculando puntajes ponderados:', calcErr);
