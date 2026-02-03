@@ -1512,10 +1512,16 @@ router.post('/email/self', isAuth, async (req, res) => {
   const def = getDefaultPeriod();
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  const force = String(req.body.force ?? req.query.force ?? '').toLowerCase() === 'true' || String(req.body.force ?? req.query.force ?? '') === '1';
   try {
     const { sendIndividualKpiResults } = require('../services/kpiEmail');
-    const result = await sendIndividualKpiResults({ employeeId: user.id, year, month });
-    return res.json({ success: true, skipped: result.skipped, message: result.skipped ? 'Los resultados ya habían sido enviados anteriormente' : 'Correo enviado correctamente' });
+    const result = await sendIndividualKpiResults({ employeeId: user.id, year, month, force });
+    return res.json({
+      success: true,
+      skipped: !!result.skipped,
+      forced: force,
+      message: result.skipped ? 'Los resultados ya habían sido enviados anteriormente' : 'Correo enviado correctamente'
+    });
   } catch (e) {
     console.error('Error enviando correo individual:', e);
     return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });
@@ -1547,10 +1553,11 @@ router.post('/email/team', isAuth, async (req, res) => {
   const def = getDefaultPeriod();
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  const includeSent = String(req.body.includeSent ?? req.query.includeSent ?? '').toLowerCase() === 'true' || String(req.body.includeSent ?? req.query.includeSent ?? '') === '1';
   try {
     const { sendSubordinateKpiResults } = require('../services/kpiEmail');
-    const result = await sendSubordinateKpiResults({ bossId: user.id, year, month });
-    return res.json({ success: true, count: result.count });
+    const result = await sendSubordinateKpiResults({ bossId: user.id, year, month, includeSent });
+    return res.json({ success: true, count: result.count, skipped: result.skipped || 0, includedSent: !!result.includedSent });
   } catch (e) {
     console.error('Error enviando correos al equipo:', e);
     return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });
@@ -1581,10 +1588,11 @@ router.post('/email/direct', isAuth, async (req, res) => {
   const def = getDefaultPeriod();
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  const includeSent = String(req.body.includeSent ?? req.query.includeSent ?? '').toLowerCase() === 'true' || String(req.body.includeSent ?? req.query.includeSent ?? '') === '1';
   try {
     const { sendDirectSubordinateKpiResults } = require('../services/kpiEmail');
-    const result = await sendDirectSubordinateKpiResults({ bossId: user.id, year, month });
-    return res.json({ success: true, count: result.count });
+    const result = await sendDirectSubordinateKpiResults({ bossId: user.id, year, month, includeSent });
+    return res.json({ success: true, count: result.count, skipped: result.skipped || 0, includedSent: !!result.includedSent });
   } catch (e) {
     console.error('Error enviando correos a subordinados directos:', e);
     return res.status(500).json({ success: false, error: e.message || 'No se pudo enviar el correo' });

@@ -1095,18 +1095,25 @@
         url = '/dashboard/email/self';
         confirmMsg = '¿Enviar tus resultados de KPIs a tu correo registrado?';
       }
-      const fd = { anio: String(_selectedYear), mes: String(_selectedMonth) };
+      const baseFd = { anio: String(_selectedYear), mes: String(_selectedMonth) };
       if (!window.confirm(confirmMsg)) return;
       try {
-        const resp = await fetch(url, {
+        const doSend = async (extra = {}) => {
+          const fd = Object.assign({}, baseFd, extra);
+          const resp = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
           body: JSON.stringify(fd)
-        });
-        const data = await resp.json().catch(() => ({}));
+          });
+          const data = await resp.json().catch(() => ({}));
+          return { resp, data };
+        };
+
+        // Primer intento (sin forzar reenvío / sin incluir ya enviados)
+        let { resp, data } = await doSend();
         if (!resp.ok || (data && data.success === false)) {
           const err = (data && data.error) || 'No se pudo enviar el correo';
           alert(err);
@@ -1114,13 +1121,40 @@
         }
         if (isTeam || isDirect) {
           const count = data.count || 0;
+          const skipped = data.skipped || 0;
+          // Si hay correos ya enviados, preguntar si se desea incluirlos también
+          if (!data.includedSent && skipped > 0) {
+            const again = window.confirm(`Se omitieron ${skipped} colaborador${skipped === 1 ? '' : 'es'} porque ya se habían enviado antes.\n\n¿Deseas incluirlos y reenviarlos también?`);
+            if (again) {
+              ({ resp, data } = await doSend({ includeSent: true }));
+              if (!resp.ok || (data && data.success === false)) {
+                const err = (data && data.error) || 'No se pudo reenviar el correo';
+                alert(err);
+                return;
+              }
+              const count2 = data.count || 0;
+              alert(`Correos enviados a ${count2} colaborador${count2 === 1 ? '' : 'es'} (incluyendo reenvíos).`);
+              return;
+            }
+          }
           alert(`Correos enviados a ${count} colaborador${count === 1 ? '' : 'es'}.`);
         } else {
-          if (data.skipped) {
+          if (data.skipped && !data.forced) {
+            const again = window.confirm('Tus resultados ya habían sido enviados anteriormente.\n\n¿Deseas enviarlos nuevamente?');
+            if (again) {
+              ({ resp, data } = await doSend({ force: true }));
+              if (!resp.ok || (data && data.success === false)) {
+                const err = (data && data.error) || 'No se pudo reenviar el correo';
+                alert(err);
+                return;
+              }
+              alert('Correo reenviado correctamente a tu buzón.');
+              return;
+            }
             alert('Tus resultados ya habían sido enviados anteriormente.');
-          } else {
-            alert('Correo enviado correctamente a tu buzón.');
+            return;
           }
+          alert('Correo enviado correctamente a tu buzón.');
         }
       } catch (err) {
         console.error('Error al enviar correo:', err);

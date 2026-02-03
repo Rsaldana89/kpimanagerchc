@@ -8,9 +8,18 @@ const mysql = require('mysql2');
 // Escape seguro para generar INSERTs en respaldo SQL
 const sqlEscape = (v) => mysql.escape(v);
 
-// Normaliza strings para comparaciones (trim + UPPER)
+// Normaliza strings para comparaciones:
+//  - trim
+//  - colapsa espacios múltiples
+//  - quita acentos/diacríticos (p.ej. PRODUCCIÓN -> PRODUCCION)
+//  - UPPER
 function normUpper(v) {
-  return String(v || '').trim().toUpperCase();
+  return String(v || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
 }
 
 // Cache simple de ids de departamentos por nombre (en UPPER)
@@ -565,6 +574,39 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
  */
 router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
+    // Precargar catálogos locales para poder hacer matching tolerante a acentos/espacios
+    // y desambiguar puestos duplicados por nombre entre departamentos.
+    const [puestosAll] = await pool.execute('SELECT id, nombre, departamento_id FROM puestos');
+    const [depsAll] = await pool.execute('SELECT id, nombre FROM departamentos');
+    const depNameById = new Map(depsAll.map(d => [String(d.id), normUpper(d.nombre)]));
+    const puestosByName = new Map();
+    for (const p of puestosAll) {
+      const key = normUpper(p.nombre);
+      if (!key) continue;
+      if (!puestosByName.has(key)) puestosByName.set(key, []);
+      puestosByName.get(key).push(p);
+    }
+
+    function resolvePuestoLocal(puestoNombreRemote, departamentoOrigenUpper) {
+      const key = normUpper(puestoNombreRemote);
+      const candidates = puestosByName.get(key) || [];
+      if (candidates.length === 0) return null;
+      if (candidates.length === 1) return candidates[0];
+
+      // Si el origen es un departamento EYE (no sucursal), intentar elegir el puesto que pertenezca
+      // a ese mismo departamento (para evitar que se vaya a OTRO u otra área).
+      if (departamentoOrigenUpper && departamentoOrigenUpper.startsWith('EYE')) {
+        const exact = candidates.find(c => depNameById.get(String(c.departamento_id)) === departamentoOrigenUpper);
+        if (exact) return exact;
+        // Si no hay exacto, al menos prioriza candidatos cuyo depto también sea EYE
+        const anyEye = candidates.find(c => (depNameById.get(String(c.departamento_id)) || '').startsWith('EYE'));
+        if (anyEye) return anyEye;
+      }
+      // Fallback: primer candidato determinístico por id
+      candidates.sort((a, b) => a.id - b.id);
+      return candidates[0];
+    }
+
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo,
               puesto AS puesto,
@@ -682,15 +724,12 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
       }
 
       // Determinar puesto y departamento locales
-      let [puestoRows] = await pool.execute(
-        'SELECT id, departamento_id FROM puestos WHERE nombre = ? ORDER BY id LIMIT 1',
-        [puestoNombre]
-      );
+      const puestoLocal = resolvePuestoLocal(puestoNombre, depOrigenUpper);
       let puestoId = null;
       let departamentoId = null;
-      if (puestoRows.length > 0) {
-        puestoId = puestoRows[0].id;
-        departamentoId = puestoRows[0].departamento_id;
+      if (puestoLocal) {
+        puestoId = puestoLocal.id;
+        departamentoId = puestoLocal.departamento_id;
       } else {
         // Si el puesto no existe, utilizar el puesto "OTRO" como comodín
         const [otroPuestoRows] = await pool.execute(

@@ -2,6 +2,70 @@ const { pool } = require('../db');
 const { sendEmail } = require('./emailService');
 const dashboardRoutes = require('../routes/dashboard');
 
+// --- Compatibilidad/Migración ligera ---
+// Algunas instalaciones antiguas no tenían la columna `enviado_el` en
+// la tabla de control de envíos. Para evitar romper el envío, aseguramos
+// la existencia de la tabla y la columna de forma segura.
+async function ensureKpiEmailsSentSchema() {
+  // 1) Crear tabla si no existe (estructura completa)
+  await pool.execute(
+    `CREATE TABLE IF NOT EXISTS kpi_emails_sent (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      empleado_id INT NOT NULL,
+      anio INT NOT NULL,
+      mes INT NOT NULL,
+      enviado_el DATETIME NOT NULL,
+      UNIQUE KEY uq_kpi_emails_sent (empleado_id, anio, mes)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+  );
+
+  // 2) Si la tabla ya existía pero sin la columna, intentar agregarla.
+  //    Nota: MySQL antes de 8 no soporta IF NOT EXISTS en ADD COLUMN.
+  try {
+    await pool.execute(`ALTER TABLE kpi_emails_sent ADD COLUMN enviado_el DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`);
+  } catch (err) {
+    // Ignorar si ya existe la columna
+    if (err && (err.code === 'ER_DUP_FIELDNAME' || String(err.message || '').includes('Duplicate column'))) {
+      return;
+    }
+    // Ignorar si no tenemos permisos para ALTER en producción, pero al menos
+    // evitamos caer con "Unknown column" en instalaciones viejas.
+    // Si no se puede alterar, más abajo hacemos fallback sin usar esa columna.
+    if (err && (err.code === 'ER_DBACCESS_DENIED_ERROR' || err.code === 'ER_TABLEACCESS_DENIED_ERROR' || err.code === 'ER_ACCESS_DENIED_ERROR')) {
+      return;
+    }
+    // Otros errores: relanzar
+    throw err;
+  }
+}
+
+async function hasColumnEnviadoEl() {
+  const [rows] = await pool.execute(
+    `SELECT COUNT(*) AS c
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'kpi_emails_sent'
+       AND COLUMN_NAME = 'enviado_el'`
+  );
+  return Number(rows?.[0]?.c || 0) > 0;
+}
+
+// Cache de columnas detectadas para instalaciones existentes.
+let __kpiEmailsSentCols = null;
+
+async function getKpiEmailsSentColumnsSafe() {
+  if (__kpiEmailsSentCols) return __kpiEmailsSentCols;
+  try {
+    const [cols] = await pool.execute('SHOW COLUMNS FROM kpi_emails_sent');
+    __kpiEmailsSentCols = new Set((cols || []).map(c => String(c.Field || '').toLowerCase()));
+    return __kpiEmailsSentCols;
+  } catch (e) {
+    // tabla no existe o no tenemos permisos
+    __kpiEmailsSentCols = new Set();
+    return __kpiEmailsSentCols;
+  }
+}
+
 /*
  * Servicio de notificación de resultados de KPIs por correo electrónico.
  * Proporciona funciones para enviar los resultados de un empleado
@@ -36,12 +100,52 @@ async function fetchEmployeeEmailInfo(employeeId) {
  * @param {number} month
  */
 async function markEmailSent(employeeId, year, month) {
-  await pool.execute(
-    `INSERT INTO kpi_emails_sent (empleado_id, anio, mes, enviado_el)
-     VALUES (?, ?, ?, NOW())
-     ON DUPLICATE KEY UPDATE enviado_el = NOW()`,
-    [employeeId, year, month]
-  );
+  // Garantizar que exista la tabla/columna si es posible
+  try {
+    await ensureKpiEmailsSentSchema();
+  } catch (e) {
+    // si falla la migración ligera, continuamos y hacemos fallback abajo
+  }
+
+  // Detectar columnas existentes y escoger el INSERT compatible.
+  const cols = await getKpiEmailsSentColumnsSafe();
+  const hasBase = cols.has('empleado_id') && cols.has('anio') && cols.has('mes');
+  if (!hasBase) {
+    // Instalación incompatible (tabla diferente). No rompemos el flujo de envío.
+    return;
+  }
+
+  // Preferir enviado_el si existe
+  if (cols.has('enviado_el')) {
+    try {
+      await pool.execute(
+        `INSERT INTO kpi_emails_sent (empleado_id, anio, mes, enviado_el)
+         VALUES (?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE enviado_el = NOW()`,
+        [employeeId, year, month]
+      );
+      return;
+    } catch (err) {
+      // Si aún así falla por campo/permiso, hacemos fallback abajo sin tirar el envío
+      if (err && (err.code !== 'ER_BAD_FIELD_ERROR')) {
+        // Para otros errores (por ejemplo, permisos), no bloqueamos el envío
+        return;
+      }
+    }
+  }
+
+  // Fallback: tabla sin enviado_el (o no se pudo usar)
+  try {
+    await pool.execute(
+      `INSERT INTO kpi_emails_sent (empleado_id, anio, mes)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE mes = VALUES(mes)`,
+      [employeeId, year, month]
+    );
+  } catch (e) {
+    // No bloqueamos el envío si el log no se pudo registrar.
+    return;
+  }
 }
 
 /**
@@ -52,11 +156,23 @@ async function markEmailSent(employeeId, year, month) {
  * @returns {Promise<boolean>} true si ya se envió
  */
 async function hasSentEmail(employeeId, year, month) {
-  const [rows] = await pool.execute(
-    `SELECT 1 FROM kpi_emails_sent WHERE empleado_id = ? AND anio = ? AND mes = ? LIMIT 1`,
-    [employeeId, year, month]
-  );
-  return rows.length > 0;
+  // Garantizar esquema (no bloqueante)
+  try {
+    await ensureKpiEmailsSentSchema();
+  } catch (e) {}
+  try {
+    const cols = await getKpiEmailsSentColumnsSafe();
+    const hasBase = cols.has('empleado_id') && cols.has('anio') && cols.has('mes');
+    if (!hasBase) return false;
+    const [rows] = await pool.execute(
+      `SELECT 1 FROM kpi_emails_sent WHERE empleado_id = ? AND anio = ? AND mes = ? LIMIT 1`,
+      [employeeId, year, month]
+    );
+    return rows.length > 0;
+  } catch (e) {
+    // Si la tabla no existe o hay columnas distintas, asumimos no enviado
+    return false;
+  }
 }
 
 /**
@@ -131,7 +247,7 @@ async function sendIndividualKpiResults({ employeeId, year, month, force = false
  * @param {number} param0.year Año del periodo.
  * @param {number} param0.month Mes del periodo.
  */
-async function sendSubordinateKpiResults({ bossId, year, month }) {
+async function sendSubordinateKpiResults({ bossId, year, month, includeSent = false }) {
   // Obtener el puesto del jefe
   const [bossRows] = await pool.execute(
     `SELECT puesto_id FROM empleados WHERE id = ? LIMIT 1`,
@@ -159,15 +275,17 @@ async function sendSubordinateKpiResults({ bossId, year, month }) {
     puestosSubordinados
   );
   let enviados = 0;
+  let skipped = 0;
   for (const emp of emps) {
     try {
-      const res = await sendIndividualKpiResults({ employeeId: emp.id, year, month });
+      const res = await sendIndividualKpiResults({ employeeId: emp.id, year, month, force: includeSent });
       if (!res.skipped) enviados++;
+      else skipped++;
     } catch (e) {
       console.error(`Error al enviar correo a empleado ${emp.id}:`, e.message);
     }
   }
-  return { count: enviados };
+  return { count: enviados, skipped, includedSent: includeSent };
 }
 
 /**
@@ -183,7 +301,7 @@ async function sendSubordinateKpiResults({ bossId, year, month }) {
  * @param {number} param0.year Año del periodo a enviar.
  * @param {number} param0.month Mes del periodo a enviar (1-12).
  */
-async function sendDirectSubordinateKpiResults({ bossId, year, month }) {
+async function sendDirectSubordinateKpiResults({ bossId, year, month, includeSent = false }) {
   // Obtener el puesto del jefe
   const [bossRows] = await pool.execute(
     `SELECT puesto_id FROM empleados WHERE id = ? LIMIT 1`,
@@ -209,15 +327,17 @@ async function sendDirectSubordinateKpiResults({ bossId, year, month }) {
     puestosDirectos
   );
   let enviados = 0;
+  let skipped = 0;
   for (const emp of emps) {
     try {
-      const res = await sendIndividualKpiResults({ employeeId: emp.id, year, month });
+      const res = await sendIndividualKpiResults({ employeeId: emp.id, year, month, force: includeSent });
       if (!res.skipped) enviados++;
+      else skipped++;
     } catch (e) {
       console.error(`Error al enviar correo a empleado ${emp.id}:`, e.message);
     }
   }
-  return { count: enviados };
+  return { count: enviados, skipped, includedSent: includeSent };
 }
 
 module.exports = {
