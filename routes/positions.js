@@ -427,6 +427,24 @@ router.post('/editar/:id', isAuth, requireRole(['admin']), async (req, res) => {
     query += ' WHERE id = ?';
     params.push(id);
     await pool.execute(query, params);
+
+    // Auto-corrección: en departamentos EYE existen puestos duplicados por nombre.
+    // Si por importación o edición previa un empleado quedó con el puesto del mismo nombre
+    // pero de otro departamento (ej: AUXILIAR DE PRODUCCIÓN de EYE ADMINISTRACION),
+    // aquí lo re-asignamos automáticamente al puesto con el mismo nombre dentro de SU depto.
+    // Esto evita que el organigrama/visor de KPIs deje "colgados" a los auxiliares.
+    await pool.execute(
+      `UPDATE empleados e
+       JOIN puestos p_cur ON p_cur.id = e.puesto_id
+       JOIN departamentos d_emp ON d_emp.id = e.departamento_id
+       JOIN puestos p_fix
+         ON p_fix.departamento_id = e.departamento_id
+        AND UPPER(p_fix.nombre) = UPPER(p_cur.nombre)
+       SET e.puesto_id = p_fix.id
+       WHERE d_emp.nombre LIKE 'EYE%'
+         AND p_cur.departamento_id <> e.departamento_id`
+    );
+
     req.flash('success', 'Puesto actualizado');
     return res.redirect('/puestos');
   } catch (err) {

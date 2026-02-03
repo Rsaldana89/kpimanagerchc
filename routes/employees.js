@@ -53,6 +53,150 @@ async function ensureDepartamentoIdByNombreUpper(nombreUpper) {
   return id;
 }
 
+// Construye un resolver para elegir el puesto "correcto" cuando existen duplicados
+// del mismo nombre en distintos departamentos (caso típico: EYE).
+//
+// Reglas:
+// - Si el departamento empieza con "EYE", buscamos el puesto por (nombre + departamento).
+// - Si NO es EYE, buscamos por nombre (primer match) como antes.
+// - Fallback: "OTRO" y, si no existe, cualquier puesto.
+async function buildPuestoResolver() {
+  const [puestosRows] = await pool.execute(
+    'SELECT id, nombre, departamento_id FROM puestos'
+  );
+  const [deptRows] = await pool.execute(
+    'SELECT id, nombre FROM departamentos'
+  );
+
+  const deptNameById = new Map();
+  const deptIdByNameUpper = new Map();
+  for (const d of deptRows) {
+    const up = normUpper(d.nombre);
+    deptNameById.set(Number(d.id), up);
+    deptIdByNameUpper.set(up, Number(d.id));
+  }
+
+  // Mapa: NOMBRE_UPPER -> [puestos]
+  const puestosByName = new Map();
+  // Mapa: NOMBRE_UPPER|DEPTO_UPPER -> [puestos]
+  const puestosByNameDept = new Map();
+  for (const p of puestosRows) {
+    const nameU = normUpper(p.nombre);
+    const deptU = deptNameById.get(Number(p.departamento_id)) || '';
+    if (!puestosByName.has(nameU)) puestosByName.set(nameU, []);
+    puestosByName.get(nameU).push({ id: Number(p.id), departamento_id: Number(p.departamento_id), deptU });
+
+    const key = `${nameU}|${deptU}`;
+    if (!puestosByNameDept.has(key)) puestosByNameDept.set(key, []);
+    puestosByNameDept.get(key).push({ id: Number(p.id), departamento_id: Number(p.departamento_id), deptU });
+  }
+
+  const getByName = (name) => puestosByName.get(normUpper(name)) || [];
+  const getByNameDept = (name, deptName) => {
+    const key = `${normUpper(name)}|${normUpper(deptName)}`;
+    return puestosByNameDept.get(key) || [];
+  };
+
+  // Resolver principal
+  function resolvePuestoLocal(remotePuestoName, remoteDeptName) {
+    const puestoNameU = normUpper(remotePuestoName);
+    const deptNameU = normUpper(remoteDeptName);
+    const isEYE = deptNameU.startsWith('EYE');
+
+    let candidates = [];
+    if (isEYE) {
+      candidates = getByNameDept(puestoNameU, deptNameU);
+      if (!candidates.length) {
+        // No hay un puesto con ese nombre en este mismo departamento EYE.
+        // Buscar algún puesto con ese nombre en CUALQUIER departamento EYE y usar el primero por id.
+        const allCandidates = getByName(puestoNameU);
+        if (allCandidates && allCandidates.length) {
+          const eyeMatches = allCandidates.filter(c => {
+            const dname = deptNameById.get(Number(c.departamento_id)) || '';
+            return dname.startsWith('EYE');
+          });
+          if (eyeMatches.length) {
+            eyeMatches.sort((a, b) => a.id - b.id);
+            return eyeMatches[0].id;
+          }
+        }
+        // Como fallback, intenta "OTRO" del mismo departamento
+        candidates = getByNameDept('OTRO', deptNameU);
+      }
+    } else {
+      candidates = getByName(puestoNameU);
+      if (!candidates.length) candidates = getByName('OTRO');
+    }
+    if (candidates.length) {
+      // Determinístico: ordenar por id para que siempre elija el mismo cuando hay varios
+      candidates.sort((a, b) => a.id - b.id);
+      return candidates[0].id;
+    }
+    // fallback absoluto a cualquier puesto
+    const any = puestosRows[0];
+    return any ? Number(any.id) : null;
+  }
+
+  return {
+    resolvePuestoLocal,
+    deptNameById,
+    deptIdByNameUpper
+  };
+}
+
+// === Import helpers ===
+// Determina el departamento de destino, la sucursal (si aplica) y el nombre de departamento
+// que debe usarse para la resolución del puesto al importar personal desde incidencias.
+// - departamentoOrigen: nombre del departamento en incidencias (puede estar vacío).
+// - deptIdByNameUpper: mapa de nombres de departamento normalizados a ids (proporcionado por buildPuestoResolver).
+// Devuelve un objeto con:
+// { deptId, sucursalId, deptForPuesto, esBaja }
+//   - deptId: id del departamento de destino o null si aún no se ha determinado.
+//   - sucursalId: id de la sucursal si departamentoOrigen coincide con una sucursal; null en otro caso.
+//   - deptForPuesto: nombre de departamento a usar al resolver el puesto (cadena vacía para buscar solo por nombre).
+//   - esBaja: booleano indicando si el origen corresponde a BAJA.
+async function resolveImportDestino(departamentoOrigen, deptIdByNameUpper) {
+  const depUpper = normUpper(departamentoOrigen || '');
+  const esBaja = depUpper.includes('BAJA');
+  let sucursalId = null;
+  let deptId = null;
+  let deptName = departamentoOrigen || '';
+  if (esBaja) {
+    deptName = 'BAJA';
+    deptId = deptIdByNameUpper.get(normUpper('BAJA')) || null;
+    if (!deptId) {
+      deptId = await ensureDepartamentoIdByNombreUpper('BAJA');
+    }
+  } else {
+    const matchId = deptIdByNameUpper.get(depUpper) || null;
+    if (matchId) {
+      deptName = departamentoOrigen;
+      deptId = matchId;
+    } else {
+      // Departamento no existe: verificar si es una sucursal
+      if (departamentoOrigen && departamentoOrigen.trim() !== '') {
+        const [sucRows] = await pool.execute(
+          'SELECT id FROM sucursales WHERE UPPER(TRIM(nombre)) = ?',
+          [depUpper]
+        );
+        if (sucRows.length > 0) {
+          sucursalId = sucRows[0].id;
+          deptName = 'OPERACIONES';
+          deptId = deptIdByNameUpper.get(normUpper('OPERACIONES')) || null;
+        }
+      }
+      // Si sigue sin encontrarse, dejar deptId a null pero mantener deptName original
+    }
+  }
+  let deptForPuesto = '';
+  if (deptId) {
+    deptForPuesto = deptName;
+  } else if (depUpper.startsWith('EYE')) {
+    deptForPuesto = deptName;
+  }
+  return { deptId, sucursalId, deptForPuesto, esBaja };
+}
+
 /*
  * Página de listado de empleados.  Muestra todos los registros de la
  * tabla empleados junto con información de puesto, departamento y
@@ -243,14 +387,58 @@ router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
     }
     const currentEmp = currentRows[0];
 
-    // Obtener departamento asociado al puesto elegido
-    const [puestoRows] = await pool.execute('SELECT departamento_id FROM puestos WHERE id = ?', [puestoIdNum]);
+    // Obtener departamento asociado al puesto elegido.
+    // OJO: en EYE existen puestos duplicados por nombre en diferentes departamentos.
+    // Si el empleado ya pertenece a un depto EYE y el usuario selecciona un puesto
+    // del mismo nombre pero de otro depto, lo corregimos automáticamente.
+    const [empDeptRows] = await pool.execute(
+      `SELECT e.departamento_id, d.nombre AS depto_nombre
+       FROM empleados e
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       WHERE e.id = ?
+       LIMIT 1`,
+      [id]
+    );
+    const empDeptId = empDeptRows.length ? Number(empDeptRows[0].departamento_id) : null;
+    const empDeptNombre = empDeptRows.length ? String(empDeptRows[0].depto_nombre || '') : '';
+
+    const [puestoRows] = await pool.execute('SELECT id, nombre, departamento_id FROM puestos WHERE id = ?', [puestoIdNum]);
     if (puestoRows.length === 0) {
       if (wantsJson) return res.status(400).json({ ok: false, error: 'Puesto no válido' });
       req.flash('error', 'Puesto no válido');
       return res.redirect('/personal');
     }
-    const deptoId = puestoRows[0].departamento_id;
+    let deptoId = puestoRows[0].departamento_id;
+    let finalPuestoId = puestoIdNum;
+
+    // Si el empleado está en un depto EYE, forzamos que el puesto también sea de algún depto EYE.
+    if (empDeptId && normUpper(empDeptNombre).startsWith('EYE') && Number(deptoId) !== empDeptId) {
+      const selectedPuestoName = puestoRows[0].nombre;
+      // 1) Intentar encontrar mismo nombre en el departamento actual del empleado (mismo depto)
+      let [fixRows] = await pool.execute(
+        'SELECT id FROM puestos WHERE departamento_id = ? AND UPPER(nombre) = ? LIMIT 1',
+        [empDeptId, normUpper(selectedPuestoName)]
+      );
+      if (fixRows.length) {
+        finalPuestoId = Number(fixRows[0].id);
+        deptoId = empDeptId;
+      } else {
+        // 2) Si no existe en el mismo departamento, buscar en cualquier departamento EYE
+        [fixRows] = await pool.execute(
+          `SELECT p.id, p.departamento_id
+           FROM puestos p
+           JOIN departamentos d ON d.id = p.departamento_id
+           WHERE UPPER(p.nombre) = ? AND UPPER(d.nombre) LIKE 'EYE%'
+           ORDER BY p.id
+           LIMIT 1`,
+          [normUpper(selectedPuestoName)]
+        );
+        if (fixRows.length) {
+          finalPuestoId = Number(fixRows[0].id);
+          deptoId = Number(fixRows[0].departamento_id);
+        }
+      }
+    }
     // Si el departamento es OPERACIONES (buscar por nombre) y sucursal_id existe, mantenerla
     let sucId = null;
     if (deptoId) {
@@ -317,7 +505,7 @@ router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
       [
         nombre,
         correo || null,
-        puestoIdNum,
+        finalPuestoId,
         deptoId || null,
         sucId,
         enablingLogin ? finalUsername : null,
@@ -376,6 +564,7 @@ router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
  */
 router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
   try {
+    const { resolvePuestoLocal, deptIdByNameUpper } = await buildPuestoResolver();
     // Consulta a la base de incidencias.  Ajustar el nombre de la tabla y columnas según sea necesario.
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo,
@@ -388,58 +577,26 @@ router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
     for (const emp of remotos) {
       const codigo = emp.codigo;
       const nombre = emp.nombre;
-      const puestoNombre = emp.puesto;
-      const departamentoOrigen = emp.departamento;
-      const depOrigenUpper = normUpper(departamentoOrigen);
-      // Buscar si el empleado ya existe
+      // Normalizar el puesto y recortar sufijos como ' - CEDIS'
+      let puestoBase = String(emp.puesto || '').trim();
+      const cutIdx = puestoBase.indexOf(' - ');
+      if (cutIdx > 0) {
+        puestoBase = puestoBase.substring(0, cutIdx).trim();
+      }
+      const departamentoOrigen = emp.departamento || '';
+      // Determinar el destino (departamento, sucursal y si es BAJA) usando helper
+      const { deptId, sucursalId, deptForPuesto, esBaja } = await resolveImportDestino(departamentoOrigen, deptIdByNameUpper);
+      // Resolver puesto local con el departamento calculado (o cadena vacía)
+      const puestoId = resolvePuestoLocal(puestoBase, deptForPuesto);
+      // Si aún no hay departamento, usar el departamento del puesto seleccionado
+      let departamentoId = deptId;
+      if (!departamentoId) {
+        const [pDept] = await pool.execute('SELECT departamento_id FROM puestos WHERE id = ? LIMIT 1', [puestoId]);
+        departamentoId = pDept.length ? pDept[0].departamento_id : null;
+      }
+      // Comprobar si ya existe empleado
       const [existRows] = await pool.execute('SELECT id FROM empleados WHERE incidencia_id = ?', [codigo]);
-      // Determinar el puesto local correspondiente
-      let [puestoRows] = await pool.execute(
-        'SELECT id, departamento_id FROM puestos WHERE nombre = ? ORDER BY id LIMIT 1',
-        [puestoNombre]
-      );
-      let puestoId = null;
-      let departamentoId = null;
-      if (puestoRows.length > 0) {
-        // Encontramos el puesto exacto
-        puestoId = puestoRows[0].id;
-        departamentoId = puestoRows[0].departamento_id;
-      } else {
-        // Si no se encuentra el puesto, intentar usar el puesto "OTRO" como comodín
-        const [otroPuestoRows] = await pool.execute(
-          'SELECT id, departamento_id FROM puestos WHERE nombre = "OTRO" ORDER BY id LIMIT 1'
-        );
-        if (otroPuestoRows.length > 0) {
-          puestoId = otroPuestoRows[0].id;
-          departamentoId = otroPuestoRows[0].departamento_id;
-        } else {
-          // En última instancia, asignar el primer puesto existente
-          const [anyPuesto] = await pool.execute('SELECT id, departamento_id FROM puestos ORDER BY id LIMIT 1');
-          puestoId = anyPuesto[0].id;
-          departamentoId = anyPuesto[0].departamento_id;
-        }
-      }
-      // Si viene de BAJA, forzar departamento BAJA (sin sucursal) y deshabilitar login.
-      // En incidencias a veces viene como "Baja", "Baja " o "Área Baja"; detectamos por inclusión.
-      const esBaja = depOrigenUpper.includes('BAJA');
-      let sucursalId = null;
-      if (esBaja) {
-        const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
-        if (bajaId) departamentoId = bajaId;
-      } else {
-        // Verificar si el departamento origen corresponde a una sucursal
-        let [sucRows] = await pool.execute('SELECT id FROM sucursales WHERE nombre = ?', [departamentoOrigen]);
-        if (sucRows.length > 0) {
-          sucursalId = sucRows[0].id;
-          // Forzar departamento OPERACIONES para sucursales
-          const [depOps] = await pool.execute('SELECT id FROM departamentos WHERE nombre = "OPERACIONES"');
-          if (depOps.length > 0) {
-            departamentoId = depOps[0].id;
-          }
-        }
-      }
       if (existRows.length > 0) {
-        // Actualizar nombre, puesto y departamento existentes
         if (esBaja) {
           await pool.execute(
             `UPDATE empleados
@@ -454,7 +611,6 @@ router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
           );
         }
       } else {
-        // Insertar nuevo empleado
         await pool.execute(
           `INSERT INTO empleados (incidencia_id, nombre, puesto_id, departamento_id, sucursal_id, login_enabled)
            VALUES (?, ?, ?, ?, ?, 0)`,
@@ -483,6 +639,7 @@ router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
  */
 router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
+    const { resolvePuestoLocal, deptIdByNameUpper } = await buildPuestoResolver();
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo,
               full_name AS nombre,
@@ -495,58 +652,30 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
     for (const emp of remotos) {
       const codigo = emp.codigo;
       const nombre = emp.nombre;
-      const puestoNombre = emp.puesto;
-      const departamentoOrigen = emp.departamento;
+      // Normalizar el puesto y eliminar sufijos como " - CEDIS" por consistencia con la import principal.
+      let puestoBase = String(emp.puesto || '').trim();
+      const cutIdx = puestoBase.indexOf(' - ');
+      if (cutIdx > 0) {
+        puestoBase = puestoBase.substring(0, cutIdx).trim();
+      }
+      const departamentoOrigen = emp.departamento || '';
       const correo = emp.correo;
-      const depOrigenUpper = normUpper(departamentoOrigen);
-      // Verificar si ya existe
+      // Si ya existe un empleado con ese código, omitirlo (esta ruta es solo nuevos)
       const [existRows] = await pool.execute('SELECT id FROM empleados WHERE incidencia_id = ?', [codigo]);
       if (existRows.length > 0) {
-        continue; // no insertar si existe
+        continue;
       }
-      // Determinar puesto y departamento locales
-      let [puestoRows] = await pool.execute(
-        'SELECT id, departamento_id FROM puestos WHERE nombre = ? ORDER BY id LIMIT 1',
-        [puestoNombre]
-      );
-      let puestoId = null;
-      let departamentoId = null;
-      if (puestoRows.length > 0) {
-        puestoId = puestoRows[0].id;
-        departamentoId = puestoRows[0].departamento_id;
-      } else {
-        // Intentar usar el puesto "OTRO" como comodín para posiciones desconocidas
-        const [otroPuestoRows] = await pool.execute(
-          'SELECT id, departamento_id FROM puestos WHERE nombre = "OTRO" ORDER BY id LIMIT 1'
-        );
-        if (otroPuestoRows.length > 0) {
-          puestoId = otroPuestoRows[0].id;
-          departamentoId = otroPuestoRows[0].departamento_id;
-        } else {
-          const [anyPuesto] = await pool.execute('SELECT id, departamento_id FROM puestos ORDER BY id LIMIT 1');
-          puestoId = anyPuesto[0].id;
-          departamentoId = anyPuesto[0].departamento_id;
-        }
+      // Usar helper para determinar deptId, sucursalId, deptForPuesto y esBaja según el departamento remoto
+      const { deptId, sucursalId, deptForPuesto, esBaja } = await resolveImportDestino(departamentoOrigen, deptIdByNameUpper);
+      // Resolver puesto con el departamento calculado (deptForPuesto) para EYE, o solo por nombre si vacío
+      const puestoId = resolvePuestoLocal(puestoBase, deptForPuesto);
+      // Determinar departamento final: si deptId ya viene definido usarlo, de lo contrario tomar el del puesto
+      let departamentoId = deptId;
+      if (!departamentoId) {
+        const [pDept] = await pool.execute('SELECT departamento_id FROM puestos WHERE id = ? LIMIT 1', [puestoId]);
+        departamentoId = pDept.length ? pDept[0].departamento_id : null;
       }
-      // Si viene de BAJA, forzar departamento BAJA (sin sucursal)
-      const esBaja = depOrigenUpper.includes('BAJA');
-      let sucursalId = null;
-      if (esBaja) {
-        const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
-        if (bajaId) departamentoId = bajaId;
-      } else {
-        // Determinar si el departamento origen corresponde a sucursal
-        let [sucRows] = await pool.execute('SELECT id FROM sucursales WHERE nombre = ?', [departamentoOrigen]);
-        if (sucRows.length > 0) {
-          sucursalId = sucRows[0].id;
-          // Forzar departamento OPERACIONES si existe
-          const [depOps] = await pool.execute('SELECT id FROM departamentos WHERE nombre = "OPERACIONES"');
-          if (depOps.length > 0) {
-            departamentoId = depOps[0].id;
-          }
-        }
-      }
-      // Insertar nuevo empleado con login deshabilitado
+      // Insertar nuevo empleado con login deshabilitado (login_enabled=0); si es BAJA, sucursal es NULL
       await pool.execute(
         `INSERT INTO empleados (incidencia_id, nombre, correo, puesto_id, departamento_id, sucursal_id, login_enabled)
          VALUES (?, ?, ?, ?, ?, ?, 0)`,
@@ -574,39 +703,8 @@ router.post('/import-nuevos', isAuth, requireRole(['admin']), async (req, res) =
  */
 router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) => {
   try {
-    // Precargar catálogos locales para poder hacer matching tolerante a acentos/espacios
-    // y desambiguar puestos duplicados por nombre entre departamentos.
-    const [puestosAll] = await pool.execute('SELECT id, nombre, departamento_id FROM puestos');
-    const [depsAll] = await pool.execute('SELECT id, nombre FROM departamentos');
-    const depNameById = new Map(depsAll.map(d => [String(d.id), normUpper(d.nombre)]));
-    const puestosByName = new Map();
-    for (const p of puestosAll) {
-      const key = normUpper(p.nombre);
-      if (!key) continue;
-      if (!puestosByName.has(key)) puestosByName.set(key, []);
-      puestosByName.get(key).push(p);
-    }
-
-    function resolvePuestoLocal(puestoNombreRemote, departamentoOrigenUpper) {
-      const key = normUpper(puestoNombreRemote);
-      const candidates = puestosByName.get(key) || [];
-      if (candidates.length === 0) return null;
-      if (candidates.length === 1) return candidates[0];
-
-      // Si el origen es un departamento EYE (no sucursal), intentar elegir el puesto que pertenezca
-      // a ese mismo departamento (para evitar que se vaya a OTRO u otra área).
-      if (departamentoOrigenUpper && departamentoOrigenUpper.startsWith('EYE')) {
-        const exact = candidates.find(c => depNameById.get(String(c.departamento_id)) === departamentoOrigenUpper);
-        if (exact) return exact;
-        // Si no hay exacto, al menos prioriza candidatos cuyo depto también sea EYE
-        const anyEye = candidates.find(c => (depNameById.get(String(c.departamento_id)) || '').startsWith('EYE'));
-        if (anyEye) return anyEye;
-      }
-      // Fallback: primer candidato determinístico por id
-      candidates.sort((a, b) => a.id - b.id);
-      return candidates[0];
-    }
-
+    // Utilizar el nuevo resolver de puestos y departamentos para detectar duplicados y EYE.
+    const { resolvePuestoLocal, deptIdByNameUpper } = await buildPuestoResolver();
     const [remotos] = await incidenciasPool.execute(
       `SELECT employee_number AS codigo,
               puesto AS puesto,
@@ -619,42 +717,25 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
     let sucursalesActualizadas = 0;
     for (const emp of remotos) {
       const codigo = emp.codigo;
-      const puestoNombre = emp.puesto;
-      const departamentoOrigen = emp.departamento;
+      // Normalizar el puesto y recortar sufijos como ' - CEDIS' o cualquier ' - ...'
+      let puestoBase = String(emp.puesto || '').trim();
+      const cutIdx = puestoBase.indexOf(' - ');
+      if (cutIdx > 0) {
+        puestoBase = puestoBase.substring(0, cutIdx).trim();
+      }
+      const departamentoOrigen = emp.departamento || '';
       const correo = emp.correo;
-      const depOrigenUpper = normUpper(departamentoOrigen);
-      // Buscar empleado existente + su puesto actual (por nombre)
+      // Buscar empleado existente
       const [existRows] = await pool.execute(
-        `SELECT e.id, e.puesto_id, e.departamento_id, e.sucursal_id, e.correo,
-                p.nombre AS puesto_actual_nombre
+        `SELECT e.id, e.puesto_id, e.departamento_id, e.sucursal_id, e.correo
          FROM empleados e
-         LEFT JOIN puestos p ON e.puesto_id = p.id
          WHERE e.incidencia_id = ?
          LIMIT 1`,
         [codigo]
       );
-      if (existRows.length === 0) {
-        continue; // no actualizar si no existe
-      }
-
+      if (!existRows || existRows.length === 0) continue;
       const actual = existRows[0];
-      const puestoActualUpper = normUpper(actual.puesto_actual_nombre);
-      const puestoRemotoUpper = normUpper(puestoNombre);
-      const esBaja = depOrigenUpper.includes('BAJA');
-
-      // ¿En incidencias el "department_name" es una sucursal?
-      // (Si es sucursal, se debe mantener sincronizado sucursal_id incluso cuando el puesto sea el mismo.)
-      let remoteSucursalId = null;
-      let remoteIsSucursal = false;
-      if (!esBaja && departamentoOrigen) {
-        const [sucRowsRemote] = await pool.execute('SELECT id FROM sucursales WHERE nombre = ?', [departamentoOrigen]);
-        if (sucRowsRemote.length > 0) {
-          remoteIsSucursal = true;
-          remoteSucursalId = sucRowsRemote[0].id;
-        }
-      }
-
-      // 1) Siempre actualizar correo (si viene con valor)
+      // Actualizar correo si viene con valor
       if (correo !== undefined && correo !== null && String(correo).trim() !== '') {
         const [rEmail] = await pool.execute(
           `UPDATE empleados SET correo = ? WHERE incidencia_id = ?`,
@@ -664,105 +745,47 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
           correosActualizados++;
         }
       }
-
-      // 2) Si viene como BAJA, mover a BAJA y deshabilitar login (sin tocar puesto)
+      // Determinar destino (departamento, sucursal y si es BAJA)
+      const { deptId, sucursalId: remoteSucursalId, deptForPuesto, esBaja } = await resolveImportDestino(departamentoOrigen, deptIdByNameUpper);
       if (esBaja) {
+        // Mover a BAJA y deshabilitar login
         const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
         if (bajaId) {
           await pool.execute(
-            `UPDATE empleados
-             SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0
-             WHERE incidencia_id = ?`,
+            `UPDATE empleados SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0 WHERE incidencia_id = ?`,
             [bajaId, codigo]
           );
+          puestosActualizados++;
         }
         continue;
       }
-
-      // 3) Si el puesto (por nombre) es el mismo, NO tocar puesto/departamento.
-      //    EXCEPCIÓN: si en incidencias viene como Sucursal, sí sincronizamos sucursal_id.
-      //    (Evita re-asignaciones de departamento por duplicados de nombre, sin perder cambios de sucursal.)
-      if (puestoActualUpper && puestoRemotoUpper && puestoActualUpper === puestoRemotoUpper) {
-        if (remoteIsSucursal && remoteSucursalId && String(actual.sucursal_id || '') !== String(remoteSucursalId)) {
-          await pool.execute(
-            'UPDATE empleados SET sucursal_id = ? WHERE incidencia_id = ?',
-            [remoteSucursalId, codigo]
-          );
-          sucursalesActualizadas++;
-        }
-        // Para puestos iguales, normalmente no actualizamos departamento.
-        // Sin embargo, para ciertos departamentos que inician con "EYE", debemos mover al empleado a ese
-        // departamento si el nombre del departamento en incidencias es uno de los permitidos y difiere
-        // del departamento actual.  Esto resuelve el caso de puestos duplicados que cambian de área
-        // dentro de EYE.
-        try {
-          const eyeList = [
-            'EYE QUESOS FRESCOS',
-            'EYE CONVERSION 1ER TURNO',
-            'EYE CONVERSION 2DO TURNO',
-            'EYE TORTILLAS',
-            'EYE ADMINISTRACION',
-            'EYE CONTROL PRODUCCION'
-          ];
-          const depNameUpper = depOrigenUpper;
-          if (eyeList.includes(depNameUpper)) {
-            const newDeptId = await ensureDepartamentoIdByNombreUpper(depNameUpper);
-            if (newDeptId && String(newDeptId) !== String(actual.departamento_id)) {
-              // Solo actualiza el departamento; mantiene puesto_id igual
-              await pool.execute(
-                'UPDATE empleados SET departamento_id = ? WHERE incidencia_id = ?',
-                [newDeptId, codigo]
-              );
-              puestosActualizados++;
-            }
-            // Nota: no eliminamos sucursal_id; solo actualizamos departamento si necesario
-          }
-        } catch (errEye) {
-          console.error('Error al actualizar departamento EYE:', errEye);
-        }
-        continue;
+      // Resolver puesto id local con el departamento calculado
+      const puestoId = resolvePuestoLocal(puestoBase, deptForPuesto);
+      // Determinar departamento final: si deptId no es null usarlo, si no usar el depto del puesto
+      let departamentoId = deptId;
+      if (!departamentoId) {
+        const [pDept] = await pool.execute('SELECT departamento_id FROM puestos WHERE id = ? LIMIT 1', [puestoId]);
+        departamentoId = pDept.length ? pDept[0].departamento_id : null;
       }
-
-      // Determinar puesto y departamento locales
-      const puestoLocal = resolvePuestoLocal(puestoNombre, depOrigenUpper);
-      let puestoId = null;
-      let departamentoId = null;
-      if (puestoLocal) {
-        puestoId = puestoLocal.id;
-        departamentoId = puestoLocal.departamento_id;
-      } else {
-        // Si el puesto no existe, utilizar el puesto "OTRO" como comodín
-        const [otroPuestoRows] = await pool.execute(
-          'SELECT id, departamento_id FROM puestos WHERE nombre = "OTRO" ORDER BY id LIMIT 1'
-        );
-        if (otroPuestoRows.length > 0) {
-          puestoId = otroPuestoRows[0].id;
-          departamentoId = otroPuestoRows[0].departamento_id;
-        } else {
-          const [anyPuesto] = await pool.execute('SELECT id, departamento_id FROM puestos ORDER BY id LIMIT 1');
-          puestoId = anyPuesto[0].id;
-          departamentoId = anyPuesto[0].departamento_id;
-        }
-      }
-      let sucursalId = remoteIsSucursal ? remoteSucursalId : null;
-
-      // Si es sucursal, forzar departamento OPERACIONES (cuando sí se está actualizando el puesto)
-      if (remoteIsSucursal) {
+      // Determinar sucursal final: si remoteSucursalId es definido (departamento es sucursal), usarlo; de lo contrario, null
+      const sucursalId = remoteSucursalId || null;
+      // Si remote department es sucursal, forzar departamento OPERACIONES
+      if (remoteSucursalId) {
         const [depOps] = await pool.execute('SELECT id FROM departamentos WHERE nombre = "OPERACIONES"');
         if (depOps.length > 0) {
           departamentoId = depOps[0].id;
         }
       }
-
-      await pool.execute(
-        `UPDATE empleados
-         SET puesto_id = ?, departamento_id = ?, sucursal_id = ?
-         WHERE incidencia_id = ?`,
-        [puestoId, departamentoId, sucursalId, codigo]
-      );
-      puestosActualizados++;
+      // Actualizar puesto, departamento y sucursal si difieren del actual
+      if (String(actual.puesto_id) !== String(puestoId) || String(actual.departamento_id) !== String(departamentoId) || String(actual.sucursal_id || '') !== String(sucursalId || '')) {
+        await pool.execute(
+          `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
+          [puestoId, departamentoId, sucursalId, codigo]
+        );
+        puestosActualizados++;
+      }
     }
-    req.flash('success', `Correos actualizados: ${correosActualizados}. Puestos/dep actualizados: ${puestosActualizados}. Sucursales (puesto igual) actualizadas: ${sucursalesActualizadas}.`);
+    req.flash('success', `Correos actualizados: ${correosActualizados}. Puestos/dep actualizados: ${puestosActualizados}. Sucursales actualizadas: ${sucursalesActualizadas}.`);
     return res.redirect('/personal');
   } catch (err) {
     console.error('Error al actualizar puestos desde incidencias:', err);
