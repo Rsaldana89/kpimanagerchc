@@ -112,6 +112,21 @@
           Exportar todos (anual)
         </a>
       </li>
+      <% if (Array.isArray(subordinatesWithChildren) && subordinatesWithChildren.length) { %>
+        <li><hr class="dropdown-divider"></li>
+        <% subordinatesWithChildren.forEach(function(sub) { %>
+          <li>
+            <a class="dropdown-item" href="/dashboard/export/subteam/<%= sub.id %>?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period&showBajas=<%= _showBajas ? '1' : '0' %>">
+              Equipo de <%= sub.nombre %> (mes)
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="/dashboard/export/subteam/<%= sub.id %>?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=annual&showBajas=<%= _showBajas ? '1' : '0' %>">
+              Equipo de <%= sub.nombre %> (anual)
+            </a>
+          </li>
+        <% }); %>
+      <% } %>
     </ul>
   </div>
 

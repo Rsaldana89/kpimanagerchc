@@ -100,6 +100,8 @@ async function buildPuestoResolver() {
   };
 
   // Resolver principal
+  // Devuelve el id del puesto local que corresponde con el nombre y departamento remotos.
+  // Maneja casos donde existen duplicados de nombre en múltiples departamentos (p. ej. EYE vs no-EYE).
   function resolvePuestoLocal(remotePuestoName, remoteDeptName) {
     const puestoNameU = normUpper(remotePuestoName);
     const deptNameU = normUpper(remoteDeptName);
@@ -107,6 +109,7 @@ async function buildPuestoResolver() {
 
     let candidates = [];
     if (isEYE) {
+      // Si el departamento remoto es EYE, se intenta encontrar el puesto exacto por nombre+departamento.
       candidates = getByNameDept(puestoNameU, deptNameU);
       if (!candidates.length) {
         // No hay un puesto con ese nombre en este mismo departamento EYE.
@@ -126,15 +129,40 @@ async function buildPuestoResolver() {
         candidates = getByNameDept('OTRO', deptNameU);
       }
     } else {
-      candidates = getByName(puestoNameU);
-      if (!candidates.length) candidates = getByName('OTRO');
+      // Para departamentos que no son EYE: buscar por nombre solamente.
+      const nameCandidates = getByName(puestoNameU);
+      // Si se reconoce el nombre del departamento remoto (y no es vacío), intentar match exacto nombre+departamento primero
+      if (nameCandidates.length && deptNameU) {
+        const deptMatches = getByNameDept(puestoNameU, deptNameU);
+        if (deptMatches && deptMatches.length) {
+          candidates = deptMatches;
+        }
+      }
+      // Si aún no hay candidatos específicos, usar los candidatos por nombre
+      if (!candidates || candidates.length === 0) {
+        candidates = nameCandidates;
+      }
+      // Cuando hay duplicados de nombre entre EYE y otros departamentos, priorizar los NO-EYE si el depto remoto no es EYE.
+      if (candidates && candidates.length > 1) {
+        const nonEye = candidates.filter(c => {
+          const dname = deptNameById.get(Number(c.departamento_id)) || '';
+          return !dname.startsWith('EYE');
+        });
+        if (nonEye.length) {
+          candidates = nonEye;
+        }
+      }
+      // Si no se encontró ningún candidato (nombre inexistente), usar "OTRO" genérico
+      if (!candidates || candidates.length === 0) {
+        candidates = getByName('OTRO');
+      }
     }
-    if (candidates.length) {
+    if (candidates && candidates.length) {
       // Determinístico: ordenar por id para que siempre elija el mismo cuando hay varios
       candidates.sort((a, b) => a.id - b.id);
       return candidates[0].id;
     }
-    // fallback absoluto a cualquier puesto
+    // fallback absoluto a cualquier puesto si no hay candidatos
     const any = puestosRows[0];
     return any ? Number(any.id) : null;
   }

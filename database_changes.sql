@@ -42,3 +42,37 @@ CREATE TABLE IF NOT EXISTS kpi_emails_sent (
   FOREIGN KEY (empleado_id) REFERENCES empleados (id)
     ON DELETE CASCADE
 );
+
+-- Crear tabla de configuración de envío masivo de KPIs
+-- Esta tabla permite configurar de forma dinámica los parámetros que
+-- controlan el programador de envíos automáticos.  Almacena el día
+-- de inicio (start_day), la hora de ejecución diaria (send_time), el
+-- límite de correos por ejecución (batch_limit) y un indicador
+-- resend_flag para habilitar el reenvío cuando no queden pendientes.
+-- Si existe más de un registro, se tomará el último actualizado.
+CREATE TABLE IF NOT EXISTS kpi_batch_config (
+  id INT PRIMARY KEY,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  start_day INT NOT NULL DEFAULT 11,
+  send_time VARCHAR(5) NOT NULL DEFAULT '20:00',
+  batch_limit INT NOT NULL DEFAULT 150,
+  resend_sent TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS kpi_batch_runs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  period_year INT NOT NULL,
+  period_month INT NOT NULL,
+  started_at DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  mode VARCHAR(20) NOT NULL DEFAULT 'scheduler',
+  total_targets INT NOT NULL DEFAULT 0,
+  sent_count INT NOT NULL DEFAULT 0,
+  skipped_count INT NOT NULL DEFAULT 0,
+  error_count INT NOT NULL DEFAULT 0,
+  is_running TINYINT(1) NOT NULL DEFAULT 0,
+  last_message VARCHAR(255) NULL,
+  last_error VARCHAR(255) NULL
+);

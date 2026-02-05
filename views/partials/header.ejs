@@ -28,6 +28,9 @@
             <li class="nav-item"><a class="nav-link" href="/personal">Personal</a></li>
             <li class="nav-item"><a class="nav-link" href="/puestos">Puestos</a></li>
             <li class="nav-item"><a class="nav-link" href="/kpis">KPIs</a></li>
+            <% if (user.role === 'admin') { %>
+              <li class="nav-item"><a class="nav-link" href="/admin/mass-email">Envío masivo</a></li>
+            <% } %>
           <% } %>
           <% if (user) { %>
             <li class="nav-item"><a class="nav-link" href="/organigrama">Organigrama</a></li>

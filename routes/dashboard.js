@@ -67,7 +67,7 @@ async function getKPIsByPosition(positionId) {
  */
 async function getKPIsAnnualHistorico({ employeeId, year, puestoActualId }) {
   const [rows] = await pool.execute(
-    `SELECT DISTINCT k.id, k.nombre, k.objetivo, k.unidad, k.criterio_calificacion,
+    `SELECT DISTINCT k.id, k.nombre, k.objetivo, k.unidad,
             pk.peso
      FROM (
        -- KPIs ya capturados por el empleado en el año
@@ -385,6 +385,13 @@ router.get('/', isAuth, async (req, res) => {
     // Para verificar subordinados en cualquier nivel usamos buildSubordinatePuestoIds
     const subordinatePuestos = buildSubordinatePuestoIds(user.puesto_id, puestos);
     const hasAnySubordinates = subordinatePuestos && subordinatePuestos.length > 0;
+    // Construir lista de subordinados directos que a su vez tienen subordinados
+    let subordinatesWithChildren = [];
+    if (Array.isArray(subordinateTree)) {
+      subordinatesWithChildren = subordinateTree
+        .filter(node => node && node.hasChildren)
+        .map(node => ({ id: node.empleado.id, nombre: node.empleado.nombre }));
+    }
     // Reglas de aprobación: el usuario NO puede aprobarse a sí mismo si tiene jefe directo.
     const canApproveSelf = (await employeeHasNoDirectBoss(user.id));
     res.render('dashboard', {
@@ -402,6 +409,7 @@ router.get('/', isAuth, async (req, res) => {
       canApproveSelf,
       hasDirectSubordinates,
       hasAnySubordinates
+      ,subordinatesWithChildren
     });
   } catch (err) {
     console.error('Error al cargar el dashboard:', err);
@@ -1102,12 +1110,12 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
   const emp = await fetchEmployeeInfo(employeeId);
   if (!emp) return null;
 
-  // Determinar los KPIs a reportar según el modo.  Para "annual_historico" se
-  // incluyen los KPIs asignados al puesto actual y aquellos KPIs que el
-  // empleado ya haya capturado en el año.  En otros modos se usan solo los
-  // KPIs del puesto actual.
+  // Determinar los KPIs a reportar según el modo.  Para el modo anual
+  // siempre se incluyen los KPIs asignados al puesto actual y aquellos
+  // KPIs que el empleado ya haya capturado en el año (histórico).  Para
+  // el modo mensual se usan solo los KPIs del puesto actual.
   let kpis;
-  if (mode === 'annual_historico') {
+  if (mode === 'annual') {
     kpis = await getKPIsAnnualHistorico({ employeeId, year, puestoActualId: emp.puesto_id });
   } else {
     kpis = await getKPIsByPosition(emp.puesto_id);
@@ -1149,7 +1157,7 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
     { header: 'Compromisos', key: 'compromisos' }
   ];
 
-  const months = (mode === 'annual' || mode === 'annual_historico')
+  const months = (mode === 'annual')
     ? Array.from({ length: 12 }, (_, i) => i + 1)
     : [month];
 
@@ -1256,7 +1264,7 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
   return { wb, emp };
 }
 
-async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
+async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includeSelf = false }) {
   const [puestos] = await pool.execute('SELECT id, responde_a_id FROM puestos');
   const subPuestos = buildSubordinatePuestoIds(user.puesto_id, puestos);
   if (!subPuestos.length) return null;
@@ -1281,13 +1289,38 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
      ORDER BY e.nombre`,
     params
   );
-  if (!emps.length) return null;
+  // Si se solicita incluir los KPIs del usuario (jefe), obtener su registro
+  let empsFinal = [...emps];
+  if (includeSelf) {
+    const [selfRows] = await pool.execute(
+      `SELECT e.id, e.incidencia_id, e.nombre,
+              e.puesto_id,
+              p.nombre AS puesto_nombre,
+              d.nombre AS departamento_nombre,
+              s.nombre AS sucursal_nombre
+       FROM empleados e
+       LEFT JOIN puestos p ON e.puesto_id = p.id
+       LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       WHERE e.id = ?
+       LIMIT 1`,
+      [user.id]
+    );
+    if (selfRows.length) {
+      const already = empsFinal.some(emp => emp.id === user.id);
+      if (!already) {
+        // Insertar al inicio para que sus KPIs aparezcan primero
+        empsFinal = [selfRows[0], ...empsFinal];
+      }
+    }
+  }
+  if (!empsFinal.length) return null;
 
-  const empIds = emps.map(e => e.id);
+  const empIds = empsFinal.map(e => e.id);
   const empPlace = empIds.map(() => '?').join(',');
 
   // KPIs por puesto
-  const puestoIds = [...new Set(emps.map(e => e.puesto_id))];
+  const puestoIds = [...new Set(empsFinal.map(e => e.puesto_id))];
   const puestoPlace = puestoIds.map(() => '?').join(',');
   const [pkRows] = await pool.execute(
     `SELECT pk.puesto_id, k.*
@@ -1390,7 +1423,7 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
 
   const monthList = (mode === 'annual') ? Array.from({ length: 12 }, (_, i) => i + 1) : [month];
 
-  emps.forEach(emp => {
+  empsFinal.forEach(emp => {
     const kpis = kpisByPuesto.get(emp.puesto_id) || [];
     monthList.forEach(m => {
       kpis.forEach(kpi => {
@@ -1457,7 +1490,7 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas }) {
     { header: 'Áreas de oportunidad', key: 'oportunidades' },
     { header: 'Compromisos', key: 'compromisos' }
   ];
-  emps.forEach(emp => {
+  empsFinal.forEach(emp => {
     monthList.forEach(m => {
       const fb = fbMap.get(`${emp.id}|${m}`) || { fortalezas: '', oportunidades: '', compromisos: '' };
       wsfb.addRow({
@@ -1501,9 +1534,13 @@ router.get('/export/self', isAuth, async (req, res) => {
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
   const modeQuery = String(req.query.mode || 'period').toLowerCase();
-  const mode = (modeQuery === 'annual')
+  // Consolidar cualquier valor "annual_historico" a "annual".  Se elimina el modo
+  // separado porque ahora el reporte anual siempre incluye KPIs de puestos
+  // anteriores.  Cualquier otro valor distinto de "annual" se trata como
+  // "period".
+  const mode = (modeQuery === 'annual' || modeQuery === 'annual_historico')
     ? 'annual'
-    : (modeQuery === 'annual_historico' ? 'annual_historico' : 'period');
+    : 'period';
 
   try {
     const built = await buildEmployeeWorkbook({ employeeId: user.id, year, month, mode });
@@ -1542,9 +1579,10 @@ router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
   const modeQuery = String(req.query.mode || 'period').toLowerCase();
-  const mode = (modeQuery === 'annual')
+  // Normalizar el modo: annual_historico se trata como annual
+  const mode = (modeQuery === 'annual' || modeQuery === 'annual_historico')
     ? 'annual'
-    : (modeQuery === 'annual_historico' ? 'annual_historico' : 'period');
+    : 'period';
 
   try {
     if (!employeeId) return res.status(400).send('Empleado inválido');
@@ -1558,8 +1596,6 @@ router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
     let filename;
     if (mode === 'annual') {
       filename = `KPIs_${built.emp.incidencia_id || employeeId}_Anual_${year}.xlsx`;
-    } else if (mode === 'annual_historico') {
-      filename = `KPIs_${built.emp.incidencia_id || employeeId}_Anual_Historico_${year}.xlsx`;
     } else {
       filename = `KPIs_${built.emp.incidencia_id || employeeId}_${year}-${String(month).padStart(2,'0')}.xlsx`;
     }
@@ -1590,7 +1626,10 @@ router.get('/export/team', isAuth, async (req, res) => {
   const includeBajas = String(req.query.showBajas || '') === '1';
 
   try {
-    const wb = await buildTeamWorkbook({ user, year, month, mode, includeBajas });
+    // Incluir los KPIs del propio usuario al inicio del reporte del equipo
+    const includeSelfParam = String(req.query.includeSelf || '1');
+    const includeSelf = includeSelfParam === '1' || includeSelfParam.toLowerCase() === 'true';
+    const wb = await buildTeamWorkbook({ user, year, month, mode, includeBajas, includeSelf });
     if (!wb) return res.status(404).send('No hay colaboradores para exportar');
 
     const filename = mode === 'annual'
@@ -1603,6 +1642,52 @@ router.get('/export/team', isAuth, async (req, res) => {
     res.end();
   } catch (e) {
     console.error('Error export team:', e);
+    return res.status(500).send('No se pudo exportar');
+  }
+});
+
+/**
+ * Exporta KPIs del equipo de un subordinado específico.  Incluye al subordinado
+ * seleccionado y a todos sus subordinados (árbol completo debajo de él).  Esta
+ * opción sólo está disponible para el jefe que tiene acceso a ese subárbol.  El
+ * parámetro includeSelf se fuerza a true para que se incluyan los KPIs del
+ * colaborador como primera sección del reporte.
+ *
+ * GET /dashboard/export/subteam/:empleadoId?anio=YYYY&mes=MM&mode=period|annual&showBajas=0|1
+ */
+router.get('/export/subteam/:empleadoId', isAuth, async (req, res) => {
+  const user = req.session.user;
+  const employeeId = parseInt(req.params.empleadoId, 10);
+  let year = parseInt(req.query.anio, 10);
+  let month = parseInt(req.query.mes, 10);
+  const def = getDefaultPeriod();
+  if (!year || isNaN(year)) year = def.year;
+  if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+  const modeQuery = String(req.query.mode || 'period').toLowerCase();
+  const mode = (modeQuery === 'annual' || modeQuery === 'annual_historico') ? 'annual' : 'period';
+  const includeBajas = String(req.query.showBajas || '') === '1';
+  try {
+    if (!employeeId) return res.status(400).send('Empleado inválido');
+    // Verificar permiso sobre el subárbol del empleado
+    const allowed = await canAccessEmployeeTree(user, employeeId);
+    if (!allowed) return res.status(403).send('Sin permisos');
+    // Obtener información del empleado para construir un usuario "falso" con su puesto
+    const [empRows] = await pool.execute('SELECT id, puesto_id, incidencia_id, nombre FROM empleados WHERE id = ? LIMIT 1', [employeeId]);
+    if (!empRows.length) return res.status(404).send('Empleado no encontrado');
+    const emp = empRows[0];
+    // Crear usuario temporal con puesto del colaborador.  Incluimos id y puesto_id.
+    const tempUser = { id: emp.id, puesto_id: emp.puesto_id, role: user.role };
+    const wb = await buildTeamWorkbook({ user: tempUser, year, month, mode, includeBajas, includeSelf: true });
+    if (!wb) return res.status(404).send('No hay colaboradores para exportar');
+    const filename = mode === 'annual'
+      ? `KPIs_Equipo_${emp.incidencia_id || emp.id}_${year}_Anual.xlsx`
+      : `KPIs_Equipo_${emp.incidencia_id || emp.id}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('Error export subteam:', e);
     return res.status(500).send('No se pudo exportar');
   }
 });
