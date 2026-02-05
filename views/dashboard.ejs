@@ -361,6 +361,8 @@
                       placeholder="Comentario del KPI..."
                       <%= isLocked ? 'disabled' : '' %>><%= res.comentario || '' %></textarea>
             <button type="submit" class="btn btn-sm btn-outline-secondary" title="Guardar comentario" <%= isLocked ? 'disabled' : '' %>>💾</button>
+            <!-- Estado de guardado del comentario -->
+            <small data-comment-status class="ms-2 text-success"></small>
           </form>
         </td>
       </tr>
@@ -904,13 +906,29 @@
         if (!resp.ok || (data && data.ok === false)) {
           throw new Error((data && data.error) || ('HTTP ' + resp.status));
         }
-        // Feedback visual rápido
+        // Mostrar mensaje "Guardado" junto al comentario
+        const statusEl = form.querySelector('[data-comment-status]');
+        if (statusEl) {
+          statusEl.textContent = 'Guardado ✔';
+          statusEl.classList.remove('text-danger');
+          statusEl.classList.add('text-success');
+          // Limpiar mensaje después de 1.5 segundos
+          setTimeout(() => { statusEl.textContent = ''; }, 1500);
+        }
+        // Cambio visual en el botón (breve)
         if (btn) {
           btn.classList.add('btn-success');
           setTimeout(()=>btn.classList.remove('btn-success'), 600);
         }
       } catch (err) {
         console.error('Error guardando comentario:', err);
+        const statusEl = form.querySelector('[data-comment-status]');
+        if (statusEl) {
+          statusEl.textContent = 'Error al guardar';
+          statusEl.classList.remove('text-success');
+          statusEl.classList.add('text-danger');
+          setTimeout(() => { statusEl.textContent = ''; }, 2000);
+        }
       } finally {
         if (btn) btn.disabled = false;
       }

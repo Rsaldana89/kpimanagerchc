@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
+// Logger helper to record significant actions in KPI manager
+const { logAction } = require('../services/logger');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { scoreKpi } = require('../services/kpiScoring');
@@ -46,6 +48,45 @@ async function getKPIsByPosition(positionId) {
      JOIN kpis k ON pk.kpi_id = k.id
      WHERE pk.puesto_id = ?`,
     [positionId]
+  );
+  return rows;
+}
+
+/*
+ * Obtiene todos los KPIs que deben aparecer en el reporte anual histórico para un empleado.
+ * Devuelve los KPIs que el empleado ya tiene capturados en el año dado (aunque esos KPIs
+ * ya no pertenezcan a su puesto actual) más los KPIs asignados a su puesto actual.  Esto
+ * permite que el reporte "Anual histórico" incluya resultados de puestos anteriores.
+ *
+ * @param {Object} params
+ *   - employeeId: ID del empleado
+ *   - year: Año a consultar
+ *   - puestoActualId: ID del puesto actual del empleado (para incluir KPIs del puesto)
+ *
+ * @returns {Promise<Array>}  Lista de KPIs con sus pesos (si aplica)
+ */
+async function getKPIsAnnualHistorico({ employeeId, year, puestoActualId }) {
+  const [rows] = await pool.execute(
+    `SELECT DISTINCT k.id, k.nombre, k.objetivo, k.unidad, k.criterio_calificacion,
+            pk.peso
+     FROM (
+       -- KPIs ya capturados por el empleado en el año
+       SELECT kr.kpi_id AS kpi_id
+       FROM kpi_resultados kr
+       WHERE kr.empleado_id = ? AND kr.anio = ?
+
+       UNION
+
+       -- KPIs asignados al puesto actual
+       SELECT pk2.kpi_id AS kpi_id
+       FROM puesto_kpis pk2
+       WHERE pk2.puesto_id = ?
+     ) x
+     JOIN kpis k ON k.id = x.kpi_id
+     LEFT JOIN puesto_kpis pk
+       ON pk.kpi_id = k.id AND pk.puesto_id = ?
+     ORDER BY k.nombre ASC`,
+    [employeeId, year, puestoActualId, puestoActualId]
   );
   return rows;
 }
@@ -182,12 +223,24 @@ async function getFeedback(employeeId, year, month) {
  * puesto dado.  Utiliza una estructura de datos cargada previamente
  * con todas las relaciones de reporte.
  */
-function buildSubordinatePuestoIds(puestoId, puestoMap) {
+function buildSubordinatePuestoIds(puestoId, puestoMap, visited = new Set()) {
+  // Convert to number to handle string vs number equality
+  const pid = Number(puestoId);
   let subordinates = [];
   for (const p of puestoMap) {
-    if (p.responde_a_id === puestoId) {
-      subordinates.push(p.id);
-      subordinates = subordinates.concat(buildSubordinatePuestoIds(p.id, puestoMap));
+    // If responde_a_id is not numeric, attempt to convert; else compare strictly
+    const respondsTo = (p.responde_a_id !== null && p.responde_a_id !== undefined) ? Number(p.responde_a_id) : null;
+    if (respondsTo === pid) {
+      const sid = Number(p.id);
+      // Avoid cycles by checking visited set
+      if (!visited.has(sid)) {
+        visited.add(sid);
+        subordinates.push(sid);
+        const children = buildSubordinatePuestoIds(sid, puestoMap, visited);
+        if (children && children.length) {
+          subordinates = subordinates.concat(children);
+        }
+      }
     }
   }
   return subordinates;
@@ -597,6 +650,23 @@ router.post('/save', isAuth, async (req, res) => {
           [targetEmployeeId, kpi_id, anio, mes, valor, resultadoColor]
         );
       }
+      // Registrar log de guardado de KPI
+      await logAction({
+        accion: 'KPI_SAVE',
+        entidad: 'kpi_resultados',
+        entidadId: null,
+        descripcion: 'Guardó calificación de KPI',
+        detalle: {
+          empleadoId: targetEmployeeId,
+          kpiId: parseInt(kpi_id, 10),
+          anio: parseInt(anio, 10),
+          mes: parseInt(mes, 10),
+          valor: valor,
+          color: resultadoColor,
+          comentario: comentario || null
+        },
+        req
+      });
     } else {
       // Guardado de comentario sin tocar valor/color (evita sobrescrituras).
       try {
@@ -610,6 +680,21 @@ router.post('/save', isAuth, async (req, res) => {
         // Si la columna comentario aún no existe, no rompemos.
         // En ese caso simplemente no guardamos comentario.
       }
+      // Registrar log de comentario de KPI
+      await logAction({
+        accion: 'KPI_COMMENT_SAVE',
+        entidad: 'kpi_resultados',
+        entidadId: null,
+        descripcion: 'Guardó comentario de KPI',
+        detalle: {
+          empleadoId: targetEmployeeId,
+          kpiId: parseInt(kpi_id, 10),
+          anio: parseInt(anio, 10),
+          mes: parseInt(mes, 10),
+          comentario: comentario || null
+        },
+        req
+      });
     }
     // Si la petición viene vía fetch/AJAX, devolver JSON para evitar recargar el dashboard
     if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
@@ -1017,7 +1102,16 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
   const emp = await fetchEmployeeInfo(employeeId);
   if (!emp) return null;
 
-  const kpis = await getKPIsByPosition(emp.puesto_id);
+  // Determinar los KPIs a reportar según el modo.  Para "annual_historico" se
+  // incluyen los KPIs asignados al puesto actual y aquellos KPIs que el
+  // empleado ya haya capturado en el año.  En otros modos se usan solo los
+  // KPIs del puesto actual.
+  let kpis;
+  if (mode === 'annual_historico') {
+    kpis = await getKPIsAnnualHistorico({ employeeId, year, puestoActualId: emp.puesto_id });
+  } else {
+    kpis = await getKPIsByPosition(emp.puesto_id);
+  }
   const resultados = await getKpiResultsForEmployee(employeeId, year);
   const feedbackMap = await fetchFeedbackMapForEmployee(employeeId, year);
 
@@ -1055,7 +1149,7 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
     { header: 'Compromisos', key: 'compromisos' }
   ];
 
-  const months = (mode === 'annual')
+  const months = (mode === 'annual' || mode === 'annual_historico')
     ? Array.from({ length: 12 }, (_, i) => i + 1)
     : [month];
 
@@ -1406,15 +1500,24 @@ router.get('/export/self', isAuth, async (req, res) => {
   const def = getDefaultPeriod();
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
-  const mode = (String(req.query.mode || 'period').toLowerCase() === 'annual') ? 'annual' : 'period';
+  const modeQuery = String(req.query.mode || 'period').toLowerCase();
+  const mode = (modeQuery === 'annual')
+    ? 'annual'
+    : (modeQuery === 'annual_historico' ? 'annual_historico' : 'period');
 
   try {
     const built = await buildEmployeeWorkbook({ employeeId: user.id, year, month, mode });
     if (!built) return res.status(404).send('Empleado no encontrado');
 
-    const filename = mode === 'annual'
-      ? `KPIs_${built.emp.incidencia_id || user.id}_Anual_${year}.xlsx`
-      : `KPIs_${built.emp.incidencia_id || user.id}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+    // Construir nombre de archivo según el modo.  Para 'annual' usar sufijo "Anual", para
+    // 'annual_historico' reutilizar el nombre del período (mes) ya que es anual pero
+    // histórico (no se distingue en el nombre), y para 'period' usar año-mes.
+    let filename;
+    if (mode === 'annual') {
+      filename = `KPIs_${built.emp.incidencia_id || user.id}_Anual_${year}.xlsx`;
+    } else {
+      filename = `KPIs_${built.emp.incidencia_id || user.id}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+    }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1438,7 +1541,10 @@ router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
   const def = getDefaultPeriod();
   if (!year || isNaN(year)) year = def.year;
   if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
-  const mode = (String(req.query.mode || 'period').toLowerCase() === 'annual') ? 'annual' : 'period';
+  const modeQuery = String(req.query.mode || 'period').toLowerCase();
+  const mode = (modeQuery === 'annual')
+    ? 'annual'
+    : (modeQuery === 'annual_historico' ? 'annual_historico' : 'period');
 
   try {
     if (!employeeId) return res.status(400).send('Empleado inválido');
@@ -1449,9 +1555,14 @@ router.get('/export/employee/:empleadoId', isAuth, async (req, res) => {
     const built = await buildEmployeeWorkbook({ employeeId, year, month, mode });
     if (!built) return res.status(404).send('Empleado no encontrado');
 
-    const filename = mode === 'annual'
-      ? `KPIs_${built.emp.incidencia_id || employeeId}_Anual_${year}.xlsx`
-      : `KPIs_${built.emp.incidencia_id || employeeId}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+    let filename;
+    if (mode === 'annual') {
+      filename = `KPIs_${built.emp.incidencia_id || employeeId}_Anual_${year}.xlsx`;
+    } else if (mode === 'annual_historico') {
+      filename = `KPIs_${built.emp.incidencia_id || employeeId}_Anual_Historico_${year}.xlsx`;
+    } else {
+      filename = `KPIs_${built.emp.incidencia_id || employeeId}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+    }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

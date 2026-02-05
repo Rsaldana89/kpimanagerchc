@@ -73,10 +73,44 @@ tr.employee-row .readlike:disabled {
 }
 
 /* Personal: mejor legibilidad (evita que los campos se vean "apelmazados") */
+.personal-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
 .personal-table th,
 .personal-table td {
   padding: .5rem .6rem;
   vertical-align: middle;
+}
+
+/* Evita que "Acciones" se expanda demasiado */
+.personal-table th.col-actions,
+.personal-table td.col-actions {
+  width: 210px;
+  min-width: 210px;
+  max-width: 210px;
+}
+
+.personal-table th.col-id,
+.personal-table td.col-id {
+  width: 90px;
+  min-width: 90px;
+  max-width: 90px;
+}
+
+.personal-table th.col-actions,
+.personal-table td.col-actions {
+  width: 210px;
+  min-width: 210px;
+  max-width: 210px;
+}
+
+.personal-table th.col-idx,
+.personal-table td.col-idx {
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
 }
 
 /* Barra horizontal visible en Personal (hace obvio que la tabla se puede recorrer) */
@@ -111,27 +145,112 @@ tr.employee-row .readlike:disabled {
   line-height: 1.25;
 }
 
+/* Ajustamos el ancho mínimo de la columna de nombre para mejor legibilidad */
 .personal-table .cell-name {
-  min-width: 280px;
+  min-width: 320px;
 }
 
-/* Anchos mínimos por columna (mantiene todo visible sin que se aplaste) */
+/* Anchos mínimos por columna (ajustados para mayor amplitud y legibilidad) */
+/* Column #4: Puesto */
 .personal-table th:nth-child(4),
-.personal-table td:nth-child(4) { min-width: 260px; } /* Puesto */
+.personal-table td:nth-child(4) { min-width: 340px; }
+/* Column #5: Responde a */
 .personal-table th:nth-child(5),
-.personal-table td:nth-child(5) { min-width: 180px; } /* Responde a */
+.personal-table td:nth-child(5) { min-width: 220px; }
+/* Column #6: Departamento */
 .personal-table th:nth-child(6),
-.personal-table td:nth-child(6) { min-width: 170px; } /* Departamento */
+.personal-table td:nth-child(6) { min-width: 200px; }
+/* Column #7: Sucursal */
 .personal-table th:nth-child(7),
-.personal-table td:nth-child(7) { min-width: 190px; } /* Sucursal */
+.personal-table td:nth-child(7) { min-width: 230px; }
+/* Column #8: Correo */
 .personal-table th:nth-child(8),
-.personal-table td:nth-child(8) { min-width: 240px; } /* Correo */
+.personal-table td:nth-child(8) { min-width: 280px; }
+/* Column #9: Usuario */
 .personal-table th:nth-child(9),
-.personal-table td:nth-child(9) { min-width: 160px; } /* Usuario */
+.personal-table td:nth-child(9) { min-width: 180px; }
+/* Column #10: Contraseña */
 .personal-table th:nth-child(10),
-.personal-table td:nth-child(10) { min-width: 220px; } /* Contraseña */
+.personal-table td:nth-child(10) { min-width: 240px; }
+/* Column #12: Acciones */
 .personal-table th:nth-child(12),
-.personal-table td:nth-child(12) { min-width: 190px; } /* Acciones */
+.personal-table td:nth-child(12) { min-width: 220px; }
+
+/* ==================================================================
+   Estilos para tarjeta de empleado (dos líneas) en la vista Personal
+   ==================================================================
+   Adaptados de versiones anteriores (v8) para mostrar la información
+   de cada empleado en formato de tarjeta. Estos estilos se usan
+   cuando la tabla tiene sólo cuatro columnas (#, ID, Empleado, Acciones)
+   y el contenido de la celda "Empleado" está estructurado con
+   <div class="emp-card"> conteniendo dos líneas: .emp-primary
+   (nombre, puesto y departamento) y .emp-secondary (jefe, sucursal,
+   correo, usuario, contraseña, acceso). Cada bloque se controla
+   mediante clases .emp-block y subclases específicas para dar
+   anchuras mínimas y comportamiento responsive.
+*/
+.emp-card {
+  display: flex;
+  flex-direction: column;
+  gap: .55rem;
+}
+
+.emp-primary,
+.emp-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  align-items: flex-end;
+}
+
+/* La segunda línea va más compacta y con un fondo suave para separar visualmente */
+.emp-secondary {
+  background: rgba(13,110,253,.03);
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: .6rem;
+  padding: .55rem;
+}
+
+.emp-block {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+
+.emp-label {
+  font-size: .75rem;
+  color: #6c757d;
+  line-height: 1;
+}
+
+.emp-name {
+  min-width: 280px;
+  flex: 2 1 280px;
+}
+
+.emp-name-text {
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+
+.emp-puesto {
+  min-width: 320px;
+  flex: 2 1 320px;
+}
+
+.emp-depto {
+  min-width: 220px;
+  flex: 0 0 220px;
+}
+
+.emp-jefe { min-width: 260px; flex: 1 1 260px; }
+.emp-sucursal { min-width: 210px; flex: 1 1 210px; }
+.emp-correo { min-width: 260px; flex: 1 1 260px; }
+.emp-user { min-width: 200px; flex: 1 1 200px; }
+.emp-pass { min-width: 280px; flex: 2 1 280px; }
+.emp-access { min-width: 150px; flex: 0 0 150px; }
 
 .save-pill {
   display: inline-flex;

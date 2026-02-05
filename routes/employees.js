@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { pool, incidenciasPool } = require('../db');
+// Logger helper
+const { logAction } = require('../services/logger');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const mysql = require('mysql2');
@@ -206,7 +208,8 @@ async function resolveImportDestino(departamentoOrigen, deptIdByNameUpper) {
 router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
   try {
     // Paginación y búsqueda
-    const perPage = 100;
+    // Usamos 50 resultados por página para mejorar el rendimiento y la legibilidad
+    const perPage = 50;
     const currentPage = parseInt(req.query.page, 10) > 0 ? parseInt(req.query.page, 10) : 1;
     const offset = (currentPage - 1) * perPage;
 
@@ -256,18 +259,20 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
     const limit = Number.isInteger(perPage) ? perPage : 100;
     const off = Number.isInteger(offset) && offset >= 0 ? offset : 0;
 
-    // Consulta principal: incluir nombre del jefe (puesto al que responde)
+    // Consulta principal: incluir nombre del jefe (p2) y su departamento (dj)
     const [rows] = await pool.execute(
       `SELECT e.id, e.incidencia_id, e.nombre, e.correo, e.username, e.login_enabled,
               p.nombre AS puesto_nombre, p.id AS puesto_id,
               d.nombre AS departamento_nombre,
               s.nombre AS sucursal_nombre,
-              p2.nombre AS jefe_nombre
+              p2.nombre AS jefe_nombre,
+              dj.nombre AS jefe_departamento_nombre
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
        LEFT JOIN puestos p2 ON p.responde_a_id = p2.id
+       LEFT JOIN departamentos dj ON dj.id = p2.departamento_id
        ${whereClause}
        ORDER BY e.nombre
        LIMIT ${limit} OFFSET ${off}`,
@@ -276,7 +281,10 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
 
     // Obtener lista de puestos para el formulario de edición
     const [puestos] = await pool.execute(
-      `SELECT p.id, p.nombre, d.nombre AS departamento_nombre FROM puestos p JOIN departamentos d ON p.departamento_id = d.id ORDER BY d.nombre, p.nombre`
+      `SELECT p.id, p.nombre, d.nombre AS departamento_nombre
+       FROM puestos p
+       JOIN departamentos d ON p.departamento_id = d.id
+       ORDER BY p.nombre, d.nombre`
     );
     // Obtener sucursales para mostrar en select (no editable en form de empleado salvo operaciones)
     const [sucs] = await pool.execute(
@@ -514,6 +522,24 @@ router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
         id
       ]
     );
+
+    // Registrar en log la actualización del empleado
+    await logAction({
+      accion: 'EMPLOYEE_UPDATE',
+      entidad: 'empleados',
+      entidadId: parseInt(id, 10),
+      descripcion: 'Actualizó datos del empleado',
+      detalle: {
+        empleadoId: parseInt(id, 10),
+        nombre: nombre,
+        correo: correo || null,
+        puestoId: finalPuestoId,
+        departamentoId: deptoId || null,
+        sucursalId: sucId,
+        loginEnabled: enablingLogin ? 1 : 0
+      },
+      req
+    });
     // Responder JSON cuando se edita inline (fetch/AJAX) para evitar recargar la página.
     if (wantsJson) {
       // Regresar datos mínimos para refrescar la fila.
@@ -527,11 +553,13 @@ router.post('/edit/:id', isAuth, requireRole(['admin']), async (req, res) => {
                 e.sucursal_id,
                 d.nombre AS departamento_nombre,
                 p.nombre AS puesto_nombre,
-                pj.nombre AS jefe_nombre
+                pj.nombre AS jefe_nombre,
+                dj.nombre AS jefe_departamento_nombre
          FROM empleados e
          LEFT JOIN departamentos d ON e.departamento_id = d.id
          LEFT JOIN puestos p ON e.puesto_id = p.id
          LEFT JOIN puestos pj ON p.responde_a_id = pj.id
+         LEFT JOIN departamentos dj ON dj.id = pj.departamento_id
          WHERE e.id = ?
          LIMIT 1`,
         [id]
