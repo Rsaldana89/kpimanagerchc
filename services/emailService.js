@@ -20,7 +20,13 @@ const nodemailer = require('nodemailer');
  */
 
 // Crear el transportador SMTP. Si alguna variable de entorno está
-// ausente se utiliza un valor por defecto seguro (host vacío)
+// ausente se utiliza un valor por defecto seguro (host vacío).
+//
+// Nota: Para proveedores como Brevo (Sendinblue) recomendamos mantener
+// el envío secuencial con un pequeño delay (ver EMAIL_SEND_DELAY_MS) en
+// lugar de abrir demasiadas conexiones. Aun así, dejamos opción de
+// habilitar "pool" por variables de entorno si se desea.
+const usePool = String(process.env.SMTP_POOL || '').toLowerCase() === 'true';
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST || '',
   port: Number(process.env.SMTP_PORT) || 587,
@@ -28,7 +34,14 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || ''
-  }
+  },
+  ...(usePool
+    ? {
+        pool: true,
+        maxConnections: Number(process.env.SMTP_MAX_CONNECTIONS) || 3,
+        maxMessages: Number(process.env.SMTP_MAX_MESSAGES) || 100
+      }
+    : {})
 });
 
 /**
@@ -42,7 +55,8 @@ const transporter = nodemailer.createTransport({
  * @returns {Promise<Object>} Resultado de nodemailer.
  */
 async function sendEmail({ to, subject, text, html, attachments = [] }) {
-  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || '';
+  // Soportar también MAIL_FROM por compatibilidad con despliegues previos.
+  const from = process.env.EMAIL_FROM || process.env.MAIL_FROM || process.env.SMTP_USER || '';
   const mailOptions = {
     from,
     to,

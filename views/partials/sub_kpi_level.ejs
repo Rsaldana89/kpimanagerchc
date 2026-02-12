@@ -1,7 +1,87 @@
+<% const doGroupBySucursal = (typeof groupBySucursal !== 'undefined') ? !!groupBySucursal : false; %>
+
 <% if (!nodes || nodes.length === 0) { %>
   <div class="text-muted small">Sin colaboradores en este nivel.</div>
-<% } else { %>
-  <% nodes.forEach(n => { %>
+<% } else if (!doGroupBySucursal) { %>
+  <% nodes.forEach(function(n) { %>
     <%- include('sub_kpi_node', { node: n, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
-  <% }) %>
+  <% }); %>
+<% } else { %>
+  <% // Ordenar los nodos por nombre de sucursal (real o virtual) para agruparlos
+     nodes.sort(function(a, b) {
+       // Comparación por sucursal, con soporte para ordenar rutas "SUPERVISION X" por número
+       const an = String(a.empleado.sucursal_nombre || '').toLowerCase();
+       const bn = String(b.empleado.sucursal_nombre || '').toLowerCase();
+       const routeRegex = /^supervision\s+(\d+)/i;
+       const ma = routeRegex.exec(an);
+       const mb = routeRegex.exec(bn);
+       if (ma && mb) {
+         // Ordenar por el número de ruta extraído
+         const numA = parseInt(ma[1], 10);
+         const numB = parseInt(mb[1], 10);
+         if (numA !== numB) return numA - numB;
+       }
+       // Para otras combinaciones (o si sólo uno es ruta), ordenar alfabéticamente
+       if (an < bn) return -1;
+       if (an > bn) return 1;
+       // Si están en la misma sucursal, ordenar por rol y luego por nombre
+       function roleWeight(emp) {
+         const puesto = String(emp.empleado.puesto_nombre || '').toUpperCase();
+         if (puesto.includes('ENCARGADO')) return 0;
+         if (puesto.includes('AUXILIAR')) return 1;
+         return 2;
+       }
+       const wa = roleWeight(a);
+       const wb = roleWeight(b);
+       if (wa !== wb) return wa - wb;
+       const na = String(a.empleado.nombre || '').toLowerCase();
+       const nb = String(b.empleado.nombre || '').toLowerCase();
+       if (na < nb) return -1;
+       if (na > nb) return 1;
+       return 0;
+     });
+     let currentBranch = null;
+     let currentRoute = null;
+  %>
+  <% nodes.forEach(function(n, idx) { %>
+    <% const branch = n.empleado.sucursal_nombre || 'Sin sucursal'; %>
+    <% const routeName = n.empleado.ruta_nombre || ''; %>
+    <% // Cuando cambia la sucursal (branch), cerrar el grupo anterior y abrir uno nuevo %>
+    <% if (branch !== currentBranch) { %>
+      <% if (currentBranch !== null) { %>
+        </div> <!-- end card-body -->
+        </div> <!-- end collapse -->
+        </div> <!-- end card -->
+      </div> <!-- end mb-3 -->
+      <% } %>
+      <% currentBranch = branch; %>
+      <% currentRoute = routeName; %>
+      <div class="mb-3">
+        <% /* Generar un identificador único para el collapse utilizando el índice */ %>
+        <% const collapseId = 'branchCollapse_' + idx; %>
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+              <button class="btn btn-sm btn-outline-secondary me-2" type="button" data-bs-toggle="collapse" data-bs-target="#<%= collapseId %>" aria-expanded="false" aria-controls="<%= collapseId %>">
+                ▸
+              </button>
+              <strong><%= currentBranch %></strong>
+              <% /* Mostrar ruta sólo si es distinta de la sucursal (en virtual coincide) */ %>
+              <% if (currentRoute && currentRoute !== currentBranch) { %>
+                <span class="badge bg-info text-dark ms-2">Ruta: <%= currentRoute %></span>
+              <% } %>
+            </div>
+          </div>
+          <div id="<%= collapseId %>" class="collapse">
+          <div class="card-body">
+    <% } %>
+    <%- include('sub_kpi_node', { node: n, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
+    <% // Si es el último elemento, cerrar las etiquetas abiertas %>
+    <% if (idx === nodes.length - 1) { %>
+          </div> <!-- end card-body -->
+          </div> <!-- end collapse -->
+        </div> <!-- end card -->
+      </div> <!-- end mb-3 -->
+    <% } %>
+  <% }); %>
 <% } %>

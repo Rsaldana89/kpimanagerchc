@@ -2,53 +2,10 @@ const { pool } = require('../db');
 const { sendEmail } = require('./emailService');
 const dashboardRoutes = require('../routes/dashboard');
 
-// --- Compatibilidad/Migración ligera ---
-// Algunas instalaciones antiguas no tenían la columna `enviado_el` en
-// la tabla de control de envíos. Para evitar romper el envío, aseguramos
-// la existencia de la tabla y la columna de forma segura.
-async function ensureKpiEmailsSentSchema() {
-  // 1) Crear tabla si no existe (estructura completa)
-  await pool.execute(
-    `CREATE TABLE IF NOT EXISTS kpi_emails_sent (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      empleado_id INT NOT NULL,
-      anio INT NOT NULL,
-      mes INT NOT NULL,
-      enviado_el DATETIME NOT NULL,
-      UNIQUE KEY uq_kpi_emails_sent (empleado_id, anio, mes)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
-  );
-
-  // 2) Si la tabla ya existía pero sin la columna, intentar agregarla.
-  //    Nota: MySQL antes de 8 no soporta IF NOT EXISTS en ADD COLUMN.
-  try {
-    await pool.execute(`ALTER TABLE kpi_emails_sent ADD COLUMN enviado_el DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`);
-  } catch (err) {
-    // Ignorar si ya existe la columna
-    if (err && (err.code === 'ER_DUP_FIELDNAME' || String(err.message || '').includes('Duplicate column'))) {
-      return;
-    }
-    // Ignorar si no tenemos permisos para ALTER en producción, pero al menos
-    // evitamos caer con "Unknown column" en instalaciones viejas.
-    // Si no se puede alterar, más abajo hacemos fallback sin usar esa columna.
-    if (err && (err.code === 'ER_DBACCESS_DENIED_ERROR' || err.code === 'ER_TABLEACCESS_DENIED_ERROR' || err.code === 'ER_ACCESS_DENIED_ERROR')) {
-      return;
-    }
-    // Otros errores: relanzar
-    throw err;
-  }
-}
-
-async function hasColumnEnviadoEl() {
-  const [rows] = await pool.execute(
-    `SELECT COUNT(*) AS c
-     FROM INFORMATION_SCHEMA.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'kpi_emails_sent'
-       AND COLUMN_NAME = 'enviado_el'`
-  );
-  return Number(rows?.[0]?.c || 0) > 0;
-}
+// --- Compatibilidad ---
+// Sin alterar el esquema de la base de datos (sin CREATE/ALTER),
+// detectamos las columnas disponibles para registrar el envío de forma
+// compatible con instalaciones anteriores.
 
 // Cache de columnas detectadas para instalaciones existentes.
 let __kpiEmailsSentCols = null;
@@ -100,13 +57,6 @@ async function fetchEmployeeEmailInfo(employeeId) {
  * @param {number} month
  */
 async function markEmailSent(employeeId, year, month) {
-  // Garantizar que exista la tabla/columna si es posible
-  try {
-    await ensureKpiEmailsSentSchema();
-  } catch (e) {
-    // si falla la migración ligera, continuamos y hacemos fallback abajo
-  }
-
   // Detectar columnas existentes y escoger el INSERT compatible.
   const cols = await getKpiEmailsSentColumnsSafe();
   const hasBase = cols.has('empleado_id') && cols.has('anio') && cols.has('mes');
@@ -156,10 +106,6 @@ async function markEmailSent(employeeId, year, month) {
  * @returns {Promise<boolean>} true si ya se envió
  */
 async function hasSentEmail(employeeId, year, month) {
-  // Garantizar esquema (no bloqueante)
-  try {
-    await ensureKpiEmailsSentSchema();
-  } catch (e) {}
   try {
     const cols = await getKpiEmailsSentColumnsSafe();
     const hasBase = cols.has('empleado_id') && cols.has('anio') && cols.has('mes');
@@ -221,7 +167,10 @@ async function sendIndividualKpiResults({ employeeId, year, month, force = false
   const html = `<p>Estimado(a) ${built.emp.nombre},</p>
     <p>Adjunto encontrarás los resultados de tus KPIs correspondientes al periodo <strong>${month}/${year}</strong>.</p>
     <p>Por favor revisa el archivo y comunícate con tu jefe directo en caso de dudas.</p>
-    <p>Este correo es generado automáticamente por el sistema KPI Manager CHC.</p>`;
+    <hr style="border:0;border-top:1px solid #e9ecef;margin:18px 0;" />
+    <p style="font-size:12px;color:#6c757d;margin:0;">
+      Este mensaje fue generado por la version de prueba de KPI Manager CHC.
+    </p>`;
   await sendEmail({
     to: emp.correo,
     subject,

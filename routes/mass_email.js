@@ -3,108 +3,87 @@ const router = express.Router();
 const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
-const { sendIndividualKpiResults } = require('../services/kpiEmail');
-const dashboardRoutes = require('./dashboard');
+const { startBatch, isRunning: isBatchRunning, getSendDelayMs } = require('../services/batchEmailRunner');
 
-/*
- * Ruta de administración para gestionar el envío masivo de KPIs.  Esta
- * página sólo está disponible para usuarios con rol "admin".  Permite
- * configurar los parámetros del programador automático (día, hora,
- * límite de envío, permitir reenvío) y realizar envíos manuales de
- * resultados de KPIs por periodo.  Desde aquí se pueden enviar
- * resultados a todos los empleados (excepto aquellos asociados a
- * sucursales) o filtrar por departamentos o incluso enviar
- * individualmente.  También se muestra un resumen del porcentaje de
- * empleados que han completado sus KPIs en el periodo seleccionado.
- */
+// =========================================================
+// Utilidades
+// =========================================================
 
-// Obtiene la configuración actual del envío masivo.  Devuelve un
-// objeto con los campos start_day, send_time, batch_limit y
-// resend_flag.  Si no hay configuración en la base de datos, se
-// construye a partir de las variables de entorno para mantener
-// compatibilidad con versiones antiguas.
-// Asegura que la tabla de configuración existe y contiene las columnas esperadas.
-// Si la tabla no existe, la crea.  Si faltan columnas (por ejemplo, 'enabled' o
-// 'resend_sent'), las agrega con valores por defecto.  Esto evita errores
-// "Unknown column" al insertar o seleccionar.
-async function ensureBatchConfigTable() {
-  // Crear la tabla si no existe.  Usamos IF NOT EXISTS para que no rompa
-  // instaladas previas.
-  await pool.execute(`CREATE TABLE IF NOT EXISTS kpi_batch_config (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    enabled TINYINT(1) DEFAULT 0,
-    start_day INT NOT NULL DEFAULT 11,
-    send_time VARCHAR(5) NOT NULL DEFAULT '20:00',
-    batch_limit INT NOT NULL DEFAULT 150,
-    resend_sent TINYINT(1) NOT NULL DEFAULT 0
-  )`);
-  // Verificar columnas y agregarlas si faltan.  MySQL soporta IF NOT EXISTS
-  // para ADD COLUMN a partir de v8; para compatibilidad usamos una consulta
-  // simple y alteramos según sea necesario.
-  const [cols] = await pool.execute(`SHOW COLUMNS FROM kpi_batch_config`);
-  const colNames = cols.map(c => c.Field);
-  const alters = [];
-  if (!colNames.includes('enabled')) {
-    alters.push('ADD COLUMN enabled TINYINT(1) DEFAULT 0');
-  }
-  if (!colNames.includes('resend_sent')) {
-    // Si la columna antigua era resend_flag, migrarla al nuevo nombre.
-    if (colNames.includes('resend_flag')) {
-      alters.push('CHANGE COLUMN resend_flag resend_sent TINYINT(1)');
-    } else {
-      alters.push('ADD COLUMN resend_sent TINYINT(1) DEFAULT 0');
-    }
-  }
-  if (alters.length) {
-    const alterStmt = `ALTER TABLE kpi_batch_config ${alters.join(', ')}`;
-    await pool.execute(alterStmt);
-  }
+function clampInt(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.trunc(n);
+  return Math.min(max, Math.max(min, i));
 }
 
-async function getBatchConfig() {
-  // Asegurarse de que la tabla/columnas están listas
-  await ensureBatchConfigTable();
-  const [rows] = await pool.execute(
-    'SELECT * FROM kpi_batch_config ORDER BY id DESC LIMIT 1'
-  );
-  if (rows.length) {
-    const cfg = rows[0];
-    return {
-      enabled: (cfg.enabled === 1 || cfg.enabled === true),
-      start_day: cfg.start_day,
-      send_time: cfg.send_time,
-      batch_limit: cfg.batch_limit,
-      resend_sent: (cfg.resend_sent === 1 || cfg.resend_sent === true)
-    };
+function defaultPrevMonth() {
+  const now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth(); // 0..11. Por diseño aquí equivale al "mes anterior" en 1..12 excepto Enero.
+  if (month === 0) {
+    month = 12;
+    year -= 1;
   }
-  // Fallback: usar variables de entorno
-  const limit = parseInt(process.env.EMAIL_BATCH_LIMIT || '150', 10);
-  const day = parseInt(process.env.EMAIL_BATCH_START_DAY || '11', 10);
-  const timeStr = process.env.EMAIL_BATCH_TIME || '20:00';
-  const resend = String(process.env.EMAIL_BATCH_RESEND_SENT || '').toLowerCase() === 'true';
-  const enabled = String(process.env.EMAIL_BATCH_ENABLED || '').toLowerCase() === 'true';
+  return { year, month };
+}
+
+function parsePeriodFromQuery(q) {
+  const def = defaultPrevMonth();
+  const year = clampInt(q.anio, 2000, 2100, def.year);
+  const month = clampInt(q.mes, 1, 12, def.month);
+  return { year, month };
+}
+
+function normalizeRun(r) {
+  if (!r) return null;
+  const hasIsRunning = Object.prototype.hasOwnProperty.call(r, 'is_running');
+  const isRunning = hasIsRunning ? (r.is_running === 1 || r.is_running === true) : !r.finished_at;
   return {
-    enabled,
-    start_day: day,
-    send_time: timeStr,
-    batch_limit: limit,
-    resend_sent: resend
+    ...r,
+    is_running: isRunning ? 1 : 0
   };
 }
 
-// Guarda (inserta o actualiza) la configuración del envío masivo.
-// Si no existe ningún registro, crea uno; de lo contrario actualiza
-// el último.  Devuelve la configuración guardada.
+// =========================================================
+// Configuración
+// =========================================================
+
+async function getBatchConfig() {
+  // Defaults desde env (compatibilidad)
+  const cfg = {
+    enabled: String(process.env.EMAIL_BATCH_ENABLED || '').toLowerCase() === 'true',
+    start_day: clampInt(process.env.EMAIL_BATCH_START_DAY || 11, 1, 31, 11),
+    send_time: process.env.EMAIL_BATCH_TIME || '20:00',
+    batch_limit: clampInt(process.env.EMAIL_BATCH_LIMIT || 150, 1, 999, 150),
+    resend_sent: String(process.env.EMAIL_BATCH_RESEND_SENT || '').toLowerCase() === 'true'
+  };
+
+  try {
+    const [rows] = await pool.execute('SELECT * FROM kpi_batch_config ORDER BY id DESC LIMIT 1');
+    if (rows && rows.length) {
+      const r = rows[0];
+      cfg.enabled = (r.enabled === 1 || r.enabled === true);
+      cfg.start_day = clampInt(r.start_day ?? cfg.start_day, 1, 31, cfg.start_day);
+      cfg.send_time = r.send_time || cfg.send_time;
+      cfg.batch_limit = clampInt(r.batch_limit ?? cfg.batch_limit, 1, 999, cfg.batch_limit);
+      cfg.resend_sent = (r.resend_sent === 1 || r.resend_sent === true);
+    }
+  } catch (e) {
+    // Si la tabla no existe en ese entorno, usamos defaults.
+  }
+
+  if (!cfg.send_time || !/^\d{1,2}:\d{2}$/.test(cfg.send_time)) cfg.send_time = '20:00';
+  return cfg;
+}
+
 async function saveBatchConfig({ enabled, start_day, send_time, batch_limit, resend_sent }) {
-  // Asegurar que la tabla existe y está migrada
-  await ensureBatchConfigTable();
-  // Normalizar valores
-  const day = Math.min(Math.max(parseInt(start_day || 11, 10), 1), 31);
-  const limit = Math.max(parseInt(batch_limit || 150, 10), 1);
-  const time = (String(send_time || '').match(/^\d{1,2}:\d{2}$/)) ? send_time : '20:00';
+  const day = clampInt(start_day || 11, 1, 31, 11);
+  const limit = clampInt(batch_limit || 150, 1, 999, 150);
+  const time = (String(send_time || '').match(/^\d{1,2}:\d{2}$/)) ? String(send_time) : '20:00';
   const en = enabled ? 1 : 0;
   const resend = resend_sent ? 1 : 0;
-  // Insertar o actualizar la fila con id=1.  Asegurarse de que las columnas existen.
+
+  // Sin migraciones: asumimos que la tabla existe.
   await pool.execute(
     `INSERT INTO kpi_batch_config (id, enabled, start_day, send_time, batch_limit, resend_sent)
      VALUES (1, ?, ?, ?, ?, ?)
@@ -116,259 +95,417 @@ async function saveBatchConfig({ enabled, start_day, send_time, batch_limit, res
        resend_sent = VALUES(resend_sent)`,
     [en, day, time, limit, resend]
   );
+
   return { enabled: !!en, start_day: day, send_time: time, batch_limit: limit, resend_sent: !!resend };
 }
 
-// Calcula los KPIs completados por empleado para un periodo.  Un
-// empleado se considera "completo" si ha capturado resultados para
-// todos los KPIs asignados a su puesto en el año/mes dados.  Devuelve
-// una lista de empleados con sus datos básicos, el nombre de su
-// departamento y un indicador de completado.  Excluye los empleados
-// con sucursal asignada (sucursal_id no nulo) y los empleados cuyo
-// departamento sea BAJA.  También devuelve un resumen por
-// departamento con recuentos de empleados y completados.
-async function fetchEmployeesCompletion({ year, month }) {
-  // Obtener todos los empleados sin sucursal y sin departamento BAJA
-  const [employees] = await pool.execute(
-    `SELECT e.id, e.incidencia_id, e.nombre,
-            e.puesto_id, e.departamento_id,
-            d.nombre AS departamento_nombre
-     FROM empleados e
-     LEFT JOIN departamentos d ON e.departamento_id = d.id
-     WHERE e.sucursal_id IS NULL
-       AND (d.nombre IS NULL OR d.nombre <> 'BAJA')
-     ORDER BY e.nombre`
-  );
-  if (!employees.length) {
-    return { employees: [], departments: [] };
-  }
-  const empIds = employees.map(e => e.id);
-  const empPlace = empIds.map(() => '?').join(',');
-  // Contar KPIs asignados por puesto
-  const puestoIds = [...new Set(employees.map(e => e.puesto_id))];
-  const puestoPlace = puestoIds.map(() => '?').join(',');
-  const [kpiCounts] = await pool.execute(
-    `SELECT pk.puesto_id, COUNT(pk.kpi_id) AS total
-     FROM puesto_kpis pk
-     WHERE pk.puesto_id IN (${puestoPlace})
-     GROUP BY pk.puesto_id`,
-    puestoIds
+// =========================================================
+// Data (estado de KPIs + estado de envío)
+// =========================================================
+
+async function fetchEmployeesStatus({ year, month }) {
+  // 1) KPIs asignados por puesto
+  const [kpiCountsRows] = await pool.execute(
+    'SELECT puesto_id, COUNT(*) AS total FROM puesto_kpis GROUP BY puesto_id'
   );
   const kpiCountMap = new Map();
-  kpiCounts.forEach(r => kpiCountMap.set(r.puesto_id, Number(r.total)));
-  // Obtener resultados de KPI para el periodo
+  (kpiCountsRows || []).forEach(r => kpiCountMap.set(Number(r.puesto_id), Number(r.total)));
+
+  // 2) Empleados (incluye sucursales) + correo + departamento + sucursal
+  let employees = [];
+  try {
+    const [empRows] = await pool.execute(
+      `SELECT e.id, e.incidencia_id, e.nombre, e.correo,
+              e.puesto_id, e.departamento_id, e.sucursal_id,
+              d.nombre AS departamento_nombre,
+              s.nombre AS sucursal_nombre
+       FROM empleados e
+       LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
+       ORDER BY e.nombre`
+    );
+    employees = empRows || [];
+  } catch (e) {
+    // Si no existe la tabla sucursales, degradar sin esa unión.
+    const [empRows] = await pool.execute(
+      `SELECT e.id, e.incidencia_id, e.nombre, e.correo,
+              e.puesto_id, e.departamento_id, e.sucursal_id,
+              d.nombre AS departamento_nombre
+       FROM empleados e
+       LEFT JOIN departamentos d ON e.departamento_id = d.id
+       WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
+       ORDER BY e.nombre`
+    );
+    employees = empRows || [];
+  }
+
+  if (!employees.length) {
+    return {
+      employees: [],
+      departments: [],
+      stats: {
+        total_employees: 0,
+        completed: 0,
+        percent_completed: 0,
+        with_email: 0,
+        without_email: 0,
+        email_sent: 0,
+        email_pending: 0,
+        percent_email_sent: 0
+      }
+    };
+  }
+
+  const empIds = employees.map(e => e.id);
+  const empPlace = empIds.map(() => '?').join(',');
+
+  // 3) Resultados KPI para periodo
   const [resRows] = await pool.execute(
     `SELECT empleado_id, kpi_id
      FROM kpi_resultados
      WHERE empleado_id IN (${empPlace}) AND anio = ? AND mes = ?`,
     [...empIds, year, month]
   );
-  // Contar resultados por empleado
   const resCountMap = new Map();
-  resRows.forEach(r => {
-    const cnt = resCountMap.get(r.empleado_id) || 0;
-    resCountMap.set(r.empleado_id, cnt + 1);
+  (resRows || []).forEach(r => {
+    const prev = resCountMap.get(r.empleado_id) || 0;
+    resCountMap.set(r.empleado_id, prev + 1);
   });
-  // Construir lista de empleados con indicador completado
+
+  // 4) Correos enviados en periodo (preferimos traer la fecha si existe)
+  const sentMap = new Map(); // empleado_id -> enviado_el (Date|string|true)
+  try {
+    const [sentRows] = await pool.execute(
+      'SELECT empleado_id, enviado_el FROM kpi_emails_sent WHERE anio = ? AND mes = ?',
+      [year, month]
+    );
+    (sentRows || []).forEach(r => sentMap.set(Number(r.empleado_id), r.enviado_el || true));
+  } catch (e) {
+    try {
+      const [sentRows] = await pool.execute(
+        'SELECT empleado_id FROM kpi_emails_sent WHERE anio = ? AND mes = ?',
+        [year, month]
+      );
+      (sentRows || []).forEach(r => sentMap.set(Number(r.empleado_id), true));
+    } catch (e2) {
+      // si la tabla no existe, dejamos el mapa vacío
+    }
+  }
+
+  // 5) Lista enriquecida
   const empList = employees.map(e => {
-    const total = kpiCountMap.get(e.puesto_id) || 0;
-    const filled = resCountMap.get(e.id) || 0;
-    const completed = (total > 0) ? (filled >= total) : false;
+    const total = kpiCountMap.get(Number(e.puesto_id)) || 0;
+    const filled = resCountMap.get(Number(e.id)) || 0;
+    const completed = total > 0 ? (filled >= total) : false;
+    const correo = (e.correo || '').trim();
+    const hasEmail = !!correo;
+    const sentInfo = sentMap.get(Number(e.id));
+    const emailSent = hasEmail && sentMap.has(Number(e.id));
+
     return {
       id: e.id,
       incidencia_id: e.incidencia_id,
       nombre: e.nombre,
+      correo,
+      has_email: hasEmail,
       departamento_id: e.departamento_id,
-      departamento_nombre: e.departamento_nombre,
-      completed
+      departamento_nombre: e.departamento_nombre || 'Sin departamento',
+      sucursal_id: e.sucursal_id,
+      sucursal_nombre: e.sucursal_nombre || '',
+      total_kpis: total,
+      filled_kpis: filled,
+      completed,
+      email_sent: emailSent,
+      email_sent_at: (sentInfo && sentInfo !== true) ? sentInfo : null
     };
   });
-  // Resumen por departamento
+
+  // 6) Resumen por departamento
   const depMap = new Map();
-  empList.forEach(emp => {
+  for (const emp of empList) {
     const depId = emp.departamento_id || 0;
-    const key = depId;
-    let obj = depMap.get(key);
-    if (!obj) {
-      obj = {
+    if (!depMap.has(depId)) {
+      depMap.set(depId, {
         id: depId,
         nombre: emp.departamento_nombre || 'Sin departamento',
         total: 0,
-        completed: 0
-      };
-      depMap.set(key, obj);
+        completed: 0,
+        with_email: 0,
+        without_email: 0,
+        email_sent: 0,
+        email_pending: 0
+      });
     }
-    obj.total += 1;
-    if (emp.completed) obj.completed += 1;
-  });
+    const d = depMap.get(depId);
+    d.total += 1;
+    if (emp.completed) d.completed += 1;
+    if (emp.has_email) d.with_email += 1;
+    else d.without_email += 1;
+    if (emp.email_sent) d.email_sent += 1;
+  }
   const departments = Array.from(depMap.values()).map(d => {
+    d.email_pending = Math.max(0, d.with_email - d.email_sent);
     const percent = d.total ? Math.round((d.completed / d.total) * 100) : 0;
-    return { ...d, percent };
+    const percentEmail = d.with_email ? Math.round((d.email_sent / d.with_email) * 100) : 0;
+    return { ...d, percent, percent_email_sent: percentEmail };
   }).sort((a, b) => a.nombre.localeCompare(b.nombre));
-  return { employees: empList, departments };
+
+  // 7) Stats globales
+  const totalEmployees = empList.length;
+  const completed = empList.filter(e => e.completed).length;
+  const withEmail = empList.filter(e => e.has_email).length;
+  const withoutEmail = totalEmployees - withEmail;
+  const emailSent = empList.filter(e => e.email_sent).length;
+  const emailPending = Math.max(0, withEmail - emailSent);
+
+  const stats = {
+    total_employees: totalEmployees,
+    completed,
+    percent_completed: totalEmployees ? Math.round((completed / totalEmployees) * 100) : 0,
+    with_email: withEmail,
+    without_email: withoutEmail,
+    email_sent: emailSent,
+    email_pending: emailPending,
+    percent_email_sent: withEmail ? Math.round((emailSent / withEmail) * 100) : 0
+  };
+
+  return { employees: empList, departments, stats };
 }
 
-// Página principal de envío masivo.  Muestra la configuración actual,
-// permite modificarla y muestra el resumen y las acciones de envío.
+// =========================================================
+// Rutas
+// =========================================================
+
 router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res) => {
   try {
-    // Periodo por defecto para envío masivo: SIEMPRE mes anterior
-    const now = new Date();
-    let defYear = now.getFullYear();
-    let defMonth = now.getMonth(); // 0-index del mes anterior
-    if (defMonth === 0) { defMonth = 12; defYear -= 1; }
-    const def = { year: defYear, month: defMonth };
-    let year = parseInt(req.query.anio, 10);
-    let month = parseInt(req.query.mes, 10);
-    if (!year || isNaN(year)) year = def.year;
-    if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+    const { year, month } = parsePeriodFromQuery(req.query);
     const config = await getBatchConfig();
-    // Últimas ejecuciones para mostrar progreso
+    const delayMs = getSendDelayMs();
+
+    // Progreso/Historial
     let recentRuns = [];
     let currentRun = null;
     try {
       const [rr] = await pool.execute(
-        `SELECT id, period_year, period_month, started_at, finished_at, mode,
-                total_targets, sent_count, skipped_count, error_count, is_running, last_message
-         FROM kpi_batch_runs
-         ORDER BY started_at DESC
-         LIMIT 10`
+        'SELECT * FROM kpi_batch_runs ORDER BY started_at DESC LIMIT 10'
       );
-      recentRuns = rr;
-      currentRun = rr.find(r => r.is_running) || null;
+      recentRuns = (rr || []).map(normalizeRun);
+      currentRun = recentRuns.find(r => r.is_running) || null;
     } catch (e) {
-      // tabla aún no creada
+      // tabla no existe en ese entorno
     }
-    const { employees, departments } = await fetchEmployeesCompletion({ year, month });
-    const completedCount = employees.filter(e => e.completed).length;
-    const completionPercent = employees.length ? Math.round((completedCount / employees.length) * 100) : 0;
+
+    const { employees, departments, stats } = await fetchEmployeesStatus({ year, month });
+
+    // Compatibilidad con la vista (nombres esperados)
+    const selectedYear = year;
+    const selectedMonth = month;
+    const departmentsSummary = (departments || []).map(d => ({
+      id: d.id,
+      nombre: d.nombre,
+      total: d.total,
+      withEmail: d.with_email,
+      withoutEmail: d.without_email,
+      emailed: d.email_sent,
+      pendingEmail: d.email_pending,
+      percent: d.percent,
+      emailPercent: d.percent_email_sent
+    }));
+
     res.render('admin_mass_email', {
-      title: 'Envío masivo',
+      title: 'Envío masivo de KPIs',
+      user: req.session.user,
       config,
-      selectedYear: year,
-      selectedMonth: month,
-      defaultYear: def.year,
-      defaultMonth: def.month,
+      year,
+      month,
+      selectedYear,
+      selectedMonth,
       employees,
-      departmentsSummary: departments,
-      completedCount,
-      completionPercent
-      ,recentRuns
-      ,currentRun
+      departments,
+      departmentsSummary,
+      stats,
+      recentRuns,
+      currentRun,
+      delayMs,
+      isSendingNow: isBatchRunning(),
+      messages: req.flash('info'),
+      errors: req.flash('error')
     });
   } catch (err) {
-    console.error('Error en GET /admin/mass-email:', err);
-    req.flash('error', 'No se pudo cargar la página de envío masivo');
-    return res.redirect('/dashboard');
+    console.error('[MassEmail] Error al cargar pantalla:', err);
+    req.flash('error', 'No se pudo cargar la pantalla de envío masivo. Revisa los logs.');
+    res.redirect('/admin');
   }
 });
 
-// Guarda la configuración enviada desde el formulario.  Después de
-// actualizar, redirige a la misma página con un mensaje de éxito.
 router.post('/admin/mass-email/config', isAuth, requireRole(['admin']), async (req, res) => {
   try {
-    const { start_day, send_time, batch_limit } = req.body;
-    const enabled = !!req.body.enabled;
-    const resend_sent = !!req.body.resend_sent;
+    const enabled = req.body.enabled === '1' || req.body.enabled === 'on';
+    const resend_sent = req.body.resend_sent === '1' || req.body.resend_sent === 'on';
+    const start_day = req.body.start_day;
+    const send_time = req.body.send_time;
+    const batch_limit = req.body.batch_limit;
+
     await saveBatchConfig({ enabled, start_day, send_time, batch_limit, resend_sent });
-    req.flash('success', 'Configuración guardada');
-    return res.redirect(`/admin/mass-email?anio=${encodeURIComponent(req.body.anio || '')}&mes=${encodeURIComponent(req.body.mes || '')}`);
+    req.flash('info', 'Configuración guardada correctamente.');
   } catch (err) {
-    console.error('Error al guardar configuración:', err);
-    req.flash('error', 'No se pudo guardar la configuración');
-    return res.redirect('/admin/mass-email');
+    console.error('[MassEmail] Error guardando configuración:', err);
+    req.flash('error', 'No se pudo guardar la configuración.');
   }
+  res.redirect('/admin/mass-email');
 });
 
-// Procesa el envío manual.  Se puede enviar a un conjunto de
-// empleados específicos (employeeIds[]), a todos los empleados de
-// determinados departamentos (departmentIds[]) o a todos los
-// empleados (sendAll=1).  Los parámetros anio y mes son
-// obligatorios.  La opción includeSent (checkbox) permite forzar el
-// reenvío a empleados que ya recibieron el correo en el periodo.
 router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req, res) => {
   try {
-    let year = parseInt(req.body.anio, 10);
-    let month = parseInt(req.body.mes, 10);
-    if (!year || isNaN(year) || !month || isNaN(month)) {
-      req.flash('error', 'Periodo inválido');
-      return res.redirect('/admin/mass-email');
-    }
-    const force = !!req.body.includeSent;
-    // Determinar lista de empleados a enviar
-    let employeeIds = [];
-    // Si se envió employeeIds[], usar esa lista
-    if (Array.isArray(req.body['employeeIds[]']) || Array.isArray(req.body.employeeIds)) {
-      const arr = req.body['employeeIds[]'] || req.body.employeeIds;
-      employeeIds = Array.isArray(arr) ? arr.map(id => parseInt(id, 10)).filter(id => !isNaN(id)) : [];
-    }
-    // Si se envían departments, obtener empleados de esos departamentos
-    let departmentIds = [];
-    if (Array.isArray(req.body['departmentIds[]']) || Array.isArray(req.body.departmentIds)) {
-      const arr = req.body['departmentIds[]'] || req.body.departmentIds;
-      departmentIds = Array.isArray(arr) ? arr.map(id => parseInt(id, 10)).filter(id => !isNaN(id)) : [];
-    }
-    const sendAll = req.body.sendAll === '1' || req.body.sendAll === 'true' || req.body.sendAll === 1;
-    // Si sendAll o departmentIds definidos, buscar empleados
-    if (sendAll || departmentIds.length) {
-      let query = `SELECT e.id
-                   FROM empleados e
-                   LEFT JOIN departamentos d ON e.departamento_id = d.id
-                   WHERE e.sucursal_id IS NULL AND (d.nombre IS NULL OR d.nombre <> 'BAJA')`;
-      const params = [];
-      if (departmentIds.length) {
-        const depPlace = departmentIds.map(() => '?').join(',');
-        query += ` AND e.departamento_id IN (${depPlace})`;
-        params.push(...departmentIds);
-      }
-      const [rows] = await pool.execute(query, params);
-      const ids = rows.map(r => r.id);
-      employeeIds = employeeIds.concat(ids);
-    }
-    // Eliminar duplicados
-    employeeIds = Array.from(new Set(employeeIds)).filter(id => !isNaN(id));
-    if (!employeeIds.length) {
-      req.flash('error', 'No se seleccionaron empleados para enviar');
+    const year = clampInt(req.body.year, 2000, 2100, defaultPrevMonth().year);
+    const month = clampInt(req.body.month, 1, 12, defaultPrevMonth().month);
+
+    const rawMode = String(req.body.sendMode || '').toLowerCase().trim();
+    const fallbackMode = (req.body.includeSent ? 'all' : 'pending');
+    const sendMode = (rawMode === 'pending' || rawMode === 'resend' || rawMode === 'all') ? rawMode : fallbackMode;
+    const force = sendMode !== 'pending';
+    const delayMs = getSendDelayMs();
+
+    // Evitar iniciar otro lote si ya hay uno en curso.
+    if (isBatchRunning()) {
+      req.flash('error', 'Ya hay un envío en curso. Espera a que termine para iniciar otro.');
       return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
     }
-    let successCount = 0;
-    let skippedCount = 0;
-    for (const empId of employeeIds) {
-      try {
-        const resObj = await sendIndividualKpiResults({ employeeId: empId, year, month, force });
-        if (resObj.skipped) skippedCount++;
-        else successCount++;
-      } catch (err) {
-        console.error(`Error enviando KPIs a empleado ${empId}:`, err.message);
+
+    const departmentIds = Array.isArray(req.body.departmentIds)
+      ? req.body.departmentIds.map(v => Number(v)).filter(n => Number.isFinite(n))
+      : [];
+    const employeeIdsFromForm = Array.isArray(req.body.employeeIds)
+      ? req.body.employeeIds.map(v => Number(v)).filter(n => Number.isFinite(n))
+      : [];
+
+    const sendAll = (req.body.sendAll === '1' || req.body.sendAll === 'true');
+
+    // -------------------------------------------------
+    // Resolver destinatarios (SIEMPRE con correo válido)
+    // -------------------------------------------------
+    let employeeIds = [];
+
+    // Helper para subquery de enviados
+    const subquerySent = 'SELECT empleado_id FROM kpi_emails_sent WHERE anio = ? AND mes = ?';
+
+    if (sendAll || departmentIds.length > 0) {
+      const params = [];
+      let query =
+        `SELECT e.id
+         FROM empleados e
+         LEFT JOIN departamentos d ON e.departamento_id = d.id
+         WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
+           AND e.correo IS NOT NULL AND e.correo <> ''`;
+
+      if (departmentIds.length) {
+        query += ` AND e.departamento_id IN (${departmentIds.map(() => '?').join(',')})`;
+        params.push(...departmentIds);
       }
+
+      if (sendMode === 'pending') {
+        query += ` AND e.id NOT IN (${subquerySent})`;
+        params.push(year, month);
+      } else if (sendMode === 'resend') {
+        query += ` AND e.id IN (${subquerySent})`;
+        params.push(year, month);
+      }
+
+      query += ' ORDER BY e.id';
+
+      const [rows] = await pool.execute(query, params);
+      employeeIds = (rows || []).map(r => Number(r.id)).filter(n => Number.isFinite(n));
+    } else if (employeeIdsFromForm.length) {
+      // Validar correos
+      const params = [...employeeIdsFromForm];
+      let query =
+        `SELECT e.id
+         FROM empleados e
+         LEFT JOIN departamentos d ON e.departamento_id = d.id
+         WHERE e.id IN (${employeeIdsFromForm.map(() => '?').join(',')})
+           AND (d.nombre IS NULL OR d.nombre <> 'BAJA')
+           AND e.correo IS NOT NULL AND e.correo <> ''`;
+
+      if (sendMode === 'pending') {
+        query += ` AND e.id NOT IN (${subquerySent})`;
+        params.push(year, month);
+      } else if (sendMode === 'resend') {
+        query += ` AND e.id IN (${subquerySent})`;
+        params.push(year, month);
+      }
+
+      const [rows] = await pool.execute(query, params);
+      employeeIds = (rows || []).map(r => Number(r.id)).filter(n => Number.isFinite(n));
+    } else {
+      req.flash('error', 'No se seleccionó ningún destinatario.');
+      return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
     }
-    req.flash('success', `Envío realizado. Enviados: ${successCount}, omitidos: ${skippedCount}`);
+
+    // De-dup
+    employeeIds = Array.from(new Set(employeeIds));
+
+    if (!employeeIds.length) {
+      const msg = (sendMode === 'pending')
+        ? 'No hay correos pendientes para el periodo seleccionado (o los destinatarios no tienen correo).'
+        : (sendMode === 'resend')
+          ? 'No hay correos enviados previamente para reenviar en este periodo.'
+          : 'No se encontraron destinatarios con correo válido.';
+      req.flash('error', msg);
+      return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
+    }
+
+    const kindLabel = (sendMode === 'pending')
+      ? 'Pendientes'
+      : (sendMode === 'resend')
+        ? 'Reenvío'
+        : 'Todos (incluye reenvíos)';
+
+    const message = `Manual: ${kindLabel}. Delay=${Math.round(delayMs)}ms. Destinatarios=${employeeIds.length}.`;
+
+    await startBatch({
+      year,
+      month,
+      mode: 'manual',
+      employeeIds,
+      force,
+      delayMs,
+      message
+    });
+
+    req.flash('info', `Envío iniciado (${kindLabel}). Destinatarios: ${employeeIds.length}.`);
     return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
   } catch (err) {
-    console.error('Error en envío manual de correos:', err);
-    req.flash('error', 'No se pudo realizar el envío');
+    if (err && err.code === 'BATCH_ALREADY_RUNNING') {
+      req.flash('error', 'Ya hay un envío en curso. Espera a que termine para iniciar otro.');
+      return res.redirect('/admin/mass-email');
+    }
+    console.error('[MassEmail] Error iniciando envío:', err);
+    req.flash('error', 'No se pudo iniciar el envío. Revisa los logs.');
     return res.redirect('/admin/mass-email');
   }
 });
 
-// Endpoint ligero para consultar el progreso (para refresco automático en la UI)
 router.get('/admin/mass-email/progress', isAuth, requireRole(['admin']), async (req, res) => {
   try {
-    const [rr] = await pool.execute(
-      `SELECT id, period_year, period_month, started_at, finished_at, mode,
-              total_targets, sent_count, skipped_count, error_count, is_running, last_message
-       FROM kpi_batch_runs
-       ORDER BY started_at DESC
-       LIMIT 1`
-    );
-    const run = rr.length ? rr[0] : null;
-    let pct = 0;
-    if (run && run.total_targets) {
-      pct = Math.round((Number(run.sent_count || 0) / Number(run.total_targets)) * 100);
-    }
-    return res.json({ run, percent: pct });
+    const [rows] = await pool.execute('SELECT * FROM kpi_batch_runs ORDER BY started_at DESC LIMIT 1');
+    const run = rows && rows.length ? normalizeRun(rows[0]) : null;
+
+    const total = run && run.total_targets ? Number(run.total_targets) : 0;
+    const sent = run && run.sent_count ? Number(run.sent_count) : 0;
+    const skipped = run && run.skipped_count ? Number(run.skipped_count) : 0;
+    const errors = run && run.error_count ? Number(run.error_count) : 0;
+    const processed = sent + skipped + errors;
+    const percent = total ? Math.round((processed / total) * 100) : 0;
+
+    res.json({
+      run,
+      percent,
+      processed,
+      total
+    });
   } catch (e) {
-    return res.json({ run: null, percent: 0 });
+    res.json({ run: null, percent: 0, processed: 0, total: 0 });
   }
 });
 

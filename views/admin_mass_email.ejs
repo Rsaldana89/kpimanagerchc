@@ -1,100 +1,396 @@
-<%- include('partials/header') %>
-<h2 class="mb-3">Envío masivo de KPIs</h2>
+<%- include('partials/header'); %>
 
-<h4>Configuración de envío masivo</h4>
-<p class="text-muted mb-2">El envío automático (cuando está activado) envía siempre <strong>el mes anterior</strong> y comienza a partir del día configurado. Las sucursales quedan excluidas por ahora.</p>
-<form method="post" action="/admin/mass-email/config" class="mb-4">
-  <div class="row g-3">
-    <div class="col-sm-3 d-flex align-items-center">
-      <div class="form-check mt-4">
-        <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="1" <%= config.enabled ? 'checked' : '' %>>
-        <label class="form-check-label" for="enabled">Activar envío automático</label>
+<% 
+  // NOTE: EJS throws ReferenceError if a variable is not provided to the view.
+  // Use typeof checks so the page never crashes.
+  const _selectedMonth = (typeof selectedMonth !== 'undefined' && selectedMonth)
+    ? Number(selectedMonth)
+    : (new Date()).getMonth() + 1;
+  const _selectedYear = (typeof selectedYear !== 'undefined' && selectedYear)
+    ? Number(selectedYear)
+    : (new Date()).getFullYear();
+
+  const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const selectedMonthName = monthNames[(_selectedMonth || 1) - 1] || `Mes ${_selectedMonth}`;
+
+  const lastRun = currentRun || (recentRuns && recentRuns.length ? recentRuns[0] : null);
+  const processed = lastRun ? (Number(lastRun.sent_count || 0) + Number(lastRun.skipped_count || 0) + Number(lastRun.error_count || 0)) : 0;
+  const percentInitial = lastRun && Number(lastRun.total_targets || 0) > 0 ? Math.round((processed / Number(lastRun.total_targets)) * 100) : 0;
+
+  const yearOptions = [];
+  const baseYear = Number.isFinite(Number(_selectedYear)) ? Number(_selectedYear) : (new Date()).getFullYear();
+  for (let y = baseYear - 2; y <= baseYear + 1; y++) yearOptions.push(y);
+%>
+
+<div class="d-flex align-items-start justify-content-between flex-wrap gap-2 mt-3 mb-3">
+  <div>
+    <h1 class="h3 mb-1">Envío masivo de KPIs</h1>
+    <div class="text-muted">Administra el envío automático y manual de resultados. Incluye operaciones y sucursales.</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="/dashboard" class="btn btn-outline-secondary btn-sm">Volver</a>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Configuración automática -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <div>
+          <strong>Configuración de envío automático</strong>
+          <div class="text-muted small">Envía el mes anterior diariamente a partir del día configurado.</div>
+        </div>
+        <span class="badge <%= config.enabled ? 'bg-success' : 'bg-secondary' %>">
+          <%= config.enabled ? 'Activo' : 'Inactivo' %>
+        </span>
       </div>
-    </div>
-    <div class="col-sm-3">
-      <label for="start_day" class="form-label">Día de envío (1‑31)</label>
-      <input type="number" class="form-control" id="start_day" name="start_day" min="1" max="31" value="<%= config.start_day %>" required>
-    </div>
-    <div class="col-sm-3">
-      <label for="send_time" class="form-label">Hora de envío (HH:MM)</label>
-      <input type="text" class="form-control" id="send_time" name="send_time" value="<%= config.send_time %>" placeholder="20:00" pattern="\d{1,2}:\d{2}" required>
-    </div>
-    <div class="col-sm-3">
-      <label for="batch_limit" class="form-label">Límite diario de correos</label>
-      <input type="number" class="form-control" id="batch_limit" name="batch_limit" min="1" value="<%= config.batch_limit %>" required>
-    </div>
-    <div class="col-sm-12">
-      <div class="form-check mt-4">
-        <input class="form-check-input" type="checkbox" id="resend_sent" name="resend_sent" value="1" <%= config.resend_sent ? 'checked' : '' %>>
-        <label class="form-check-label" for="resend_sent">Cuando no queden pendientes, reenviar (por lote) a quienes ya recibieron el correo</label>
+      <div class="card-body">
+        <div class="alert alert-info py-2 mb-3">
+          <div class="small">
+            <ul class="mb-0">
+              <li><strong>Periodo:</strong> siempre se envía el <strong>mes anterior</strong>.</li>
+              <li><strong>Alcance:</strong> incluye <strong>operaciones</strong> y <strong>sucursales</strong>.</li>
+              <li><strong>Entrega:</strong> se envía en cola con un delay de <strong><%= delayMs %> ms</strong> por correo (configurable por variable de entorno).</li>
+            </ul>
+          </div>
+        </div>
+
+        <form method="POST" action="/admin/mass-email/config" class="row g-3">
+          <div class="col-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="enabled" name="enabled" value="1" <%= config.enabled ? 'checked' : '' %> />
+              <label class="form-check-label" for="enabled">Activar envío automático</label>
+            </div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label" for="start_day">Día de envío (1-31)</label>
+            <input class="form-control" type="number" id="start_day" name="start_day" min="1" max="31" value="<%= config.start_day || 11 %>" required />
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label" for="send_time">Hora (HH:MM)</label>
+            <input class="form-control" type="text" id="send_time" name="send_time" value="<%= config.send_time || '20:00' %>" placeholder="20:00" pattern="^\d{1,2}:\d{2}$" required />
+            <div class="form-text">Formato 24h (ej: 20:00).</div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label" for="batch_limit">Límite diario</label>
+            <input class="form-control" type="number" id="batch_limit" name="batch_limit" min="1" max="999" value="<%= config.batch_limit || 150 %>" required />
+            <div class="form-text">Máximo permitido en UI: 999.</div>
+          </div>
+
+          <div class="col-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="resend_sent" name="resend_sent" value="1" <%= config.resend_sent ? 'checked' : '' %> />
+              <label class="form-check-label" for="resend_sent">
+                Cuando no queden pendientes, reenviar (por lote) a quienes ya recibieron el correo
+              </label>
+            </div>
+          </div>
+
+          <!-- Mantener periodo visible al guardar -->
+          <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+          <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+
+          <div class="col-12 d-flex gap-2">
+            <button class="btn btn-primary" type="submit">Guardar configuración</button>
+            <span class="text-muted small align-self-center">(El programador recarga configuración en cada ejecución)</span>
+          </div>
+        </form>
       </div>
     </div>
   </div>
-  <div class="mt-3">
-    <input type="hidden" name="anio" value="<%= selectedYear %>">
-    <input type="hidden" name="mes" value="<%= selectedMonth %>">
-    <button type="submit" class="btn btn-primary">Guardar configuración</button>
-  </div>
-</form>
 
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">Progreso de envíos</h5>
-      <small class="text-muted" id="progress-updated">...</small>
-    </div>
-    <div id="progress-area" class="mt-3">
-      <% if (recentRuns && recentRuns.length) { %>
-        <% const r0 = recentRuns[0]; %>
-        <% const pct0 = r0.total_targets ? Math.round((Number(r0.sent_count || 0) / Number(r0.total_targets)) * 100) : 0; %>
-        <div class="mb-2">
-          <strong>Última ejecución:</strong>
-          <span class="ms-2"><%= String(r0.period_month).padStart(2,'0') %>/<%= r0.period_year %></span>
-          <span class="ms-2 badge <%= r0.is_running ? 'bg-warning text-dark' : 'bg-success' %>">
-            <%= r0.is_running ? 'En curso' : 'Finalizada' %>
+  <!-- Progreso -->
+  <div class="col-lg-6">
+    <div class="card shadow-sm" id="progressCard">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <div>
+          <strong>Progreso de envíos</strong>
+          <div class="text-muted small">Se actualiza automáticamente.</div>
+        </div>
+        <div>
+          <span id="runStatusBadge" class="badge <%= lastRun && lastRun.is_running ? 'bg-warning text-dark' : 'bg-light text-dark border' %>">
+            <%= lastRun ? (lastRun.is_running ? 'En curso' : 'Finalizado') : 'Sin ejecuciones' %>
           </span>
-          <% if (r0.last_message) { %>
-            <div class="text-muted small mt-1"><%= r0.last_message %></div>
+        </div>
+      </div>
+
+      <div class="card-body">
+        <% if (!lastRun) { %>
+          <div class="text-muted">Aún no hay ejecuciones registradas.</div>
+        <% } else { %>
+          <div class="row g-2 mb-2">
+            <div class="col-md-6">
+              <div class="small text-muted">Última ejecución</div>
+              <div class="fw-semibold" id="runPeriod">
+                <%= String(lastRun.period_month).padStart(2,'0') %>/<%= lastRun.period_year %>
+                <span class="badge bg-light text-dark border ms-1" id="runMode"><%= lastRun.mode %></span>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="small text-muted">Actualizado</div>
+              <div class="fw-semibold" id="runUpdated">—</div>
+            </div>
+          </div>
+
+          <div class="mb-2">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <div class="small text-muted">Procesados</div>
+              <div class="small fw-semibold" id="runCounts">
+                <%= processed %> / <%= lastRun.total_targets || 0 %>
+              </div>
+            </div>
+            <div class="progress" style="height: 10px;">
+              <div id="runProgressBar" class="progress-bar" role="progressbar" style="width: <%= percentInitial %>%" aria-valuenow="<%= percentInitial %>" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+            <div class="d-flex justify-content-between mt-1">
+              <span class="small text-muted" id="runBreakdown">Enviados: <%= lastRun.sent_count || 0 %> · Omitidos: <%= lastRun.skipped_count || 0 %> · Errores: <%= lastRun.error_count || 0 %></span>
+              <span class="small text-muted" id="runPercent"><%= percentInitial %>%</span>
+            </div>
+          </div>
+
+          <div class="border rounded p-2 bg-light">
+            <div class="small text-muted">Mensaje</div>
+            <div class="small" id="runMessage"><%= lastRun.last_message || '—' %></div>
+            <% if (lastRun.last_error) { %>
+              <div class="small text-danger mt-1" id="runLastError"><strong>Último error:</strong> <%= lastRun.last_error %></div>
+            <% } else { %>
+              <div class="small text-danger mt-1 d-none" id="runLastError"></div>
+            <% } %>
+          </div>
+
+          <div class="mt-3">
+            <div class="accordion" id="runsAccordion">
+              <div class="accordion-item">
+                <h2 class="accordion-header" id="runsHeading">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#runsCollapse" aria-expanded="false" aria-controls="runsCollapse">
+                    Historial de ejecuciones (últimas 10)
+                  </button>
+                </h2>
+                <div id="runsCollapse" class="accordion-collapse collapse" aria-labelledby="runsHeading" data-bs-parent="#runsAccordion">
+                  <div class="accordion-body">
+                    <% if (!recentRuns || !recentRuns.length) { %>
+                      <div class="text-muted small">Sin ejecuciones registradas.</div>
+                    <% } else { %>
+                      <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                          <thead>
+                            <tr>
+                              <th>Periodo</th>
+                              <th>Modo</th>
+                              <th>Inicio</th>
+                              <th>Fin</th>
+                              <th class="text-end">Total</th>
+                              <th class="text-end">Enviados</th>
+                              <th class="text-end">Omitidos</th>
+                              <th class="text-end">Errores</th>
+                              <th>Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <% recentRuns.forEach(r => { 
+                                 const processedR = Number(r.sent_count || 0) + Number(r.skipped_count || 0) + Number(r.error_count || 0);
+                                 const isoStart = r.started_at ? new Date(r.started_at).toISOString() : '';
+                                 const isoEnd = r.finished_at ? new Date(r.finished_at).toISOString() : '';
+                            %>
+                              <tr>
+                                <td><%= String(r.period_month).padStart(2,'0') %>/<%= r.period_year %></td>
+                                <td><span class="badge bg-light text-dark border"><%= r.mode %></span></td>
+                                <td><span class="dt" data-dt="<%= isoStart %>"><%= isoStart ? isoStart : '—' %></span></td>
+                                <td><span class="dt" data-dt="<%= isoEnd %>"><%= isoEnd ? isoEnd : '—' %></span></td>
+                                <td class="text-end"><%= r.total_targets || 0 %></td>
+                                <td class="text-end"><%= r.sent_count || 0 %></td>
+                                <td class="text-end"><%= r.skipped_count || 0 %></td>
+                                <td class="text-end"><%= r.error_count || 0 %></td>
+                                <td>
+                                  <% if (r.is_running) { %>
+                                    <span class="badge bg-warning text-dark">En curso</span>
+                                  <% } else if ((r.total_targets || 0) > 0 && processedR >= (r.total_targets || 0) && (r.error_count || 0) === 0) { %>
+                                    <span class="badge bg-success">OK</span>
+                                  <% } else if ((r.error_count || 0) > 0) { %>
+                                    <span class="badge bg-danger">Con errores</span>
+                                  <% } else { %>
+                                    <span class="badge bg-secondary">Finalizado</span>
+                                  <% } %>
+                                </td>
+                              </tr>
+                            <% }) %>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="small text-muted">* Las fechas se muestran en tu zona horaria del navegador.</div>
+                    <% } %>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% } %>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Envío manual -->
+<div class="card shadow-sm mt-4">
+  <div class="card-header">
+    <strong>Envío manual de resultados</strong>
+    <div class="text-muted small">Selecciona el periodo y envía pendientes / reenvía. (Incluye sucursales)</div>
+  </div>
+  <div class="card-body">
+    <form method="GET" action="/admin/mass-email" class="row g-2 align-items-end">
+      <div class="col-md-2">
+        <label class="form-label">Año</label>
+        <select name="anio" class="form-select">
+          <% yearOptions.forEach(y => { %>
+            <option value="<%= y %>" <%= y === _selectedYear ? 'selected' : '' %>><%= y %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Mes</label>
+        <select name="mes" class="form-select">
+          <% for (let i = 1; i <= 12; i++) { %>
+            <option value="<%= i %>" <%= i === _selectedMonth ? 'selected' : '' %>><%= monthNames[i-1] %></option>
           <% } %>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <button class="btn btn-outline-primary" type="submit">Actualizar periodo</button>
+        <div class="form-text">* Por defecto: mes anterior.</div>
+      </div>
+      <div class="col-md-4 text-md-end">
+        <div class="small text-muted">Periodo seleccionado</div>
+        <div class="fw-semibold"><%= selectedMonthName %> <%= _selectedYear %></div>
+      </div>
+    </form>
+
+    <hr class="my-3" />
+
+    <div class="row g-2">
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">Empleados</div>
+          <div class="h5 mb-0"><%= stats?.totalEmployees ?? 0 %></div>
         </div>
-        <div class="progress" style="height: 18px;">
-          <div class="progress-bar" role="progressbar" style="width: <%= pct0 %>%" aria-valuenow="<%= pct0 %>" aria-valuemin="0" aria-valuemax="100"><%= pct0 %>%</div>
+      </div>
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">Con correo</div>
+          <div class="h5 mb-0"><%= stats?.withEmail ?? 0 %></div>
         </div>
-        <div class="small text-muted mt-2">
-          Enviados: <strong id="p-sent"><%= r0.sent_count || 0 %></strong> / <strong id="p-total"><%= r0.total_targets || 0 %></strong>
-          &nbsp;|&nbsp; Errores: <strong id="p-err"><%= r0.error_count || 0 %></strong>
+      </div>
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">Sin correo</div>
+          <div class="h5 mb-0"><%= stats?.withoutEmail ?? 0 %></div>
         </div>
-      <% } else { %>
-        <div class="text-muted">Aún no hay ejecuciones registradas.</div>
-      <% } %>
+      </div>
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">Enviados</div>
+          <div class="h5 mb-0"><%= stats?.emailed ?? 0 %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">Pendientes</div>
+          <div class="h5 mb-0"><%= stats?.pendingEmail ?? 0 %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-2">
+        <div class="border rounded p-2 h-100">
+          <div class="small text-muted">% KPIs completos</div>
+          <div class="h5 mb-0"><%= stats?.completionPercent ?? 0 %>%</div>
+        </div>
+      </div>
     </div>
 
-    <% if (recentRuns && recentRuns.length > 1) { %>
-      <hr>
-      <div class="small text-muted mb-2">Historial reciente</div>
+    <div class="d-flex flex-wrap gap-2 mt-3">
+      <form method="POST" action="/admin/mass-email/send" class="d-inline">
+        <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+        <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+        <input type="hidden" name="sendAll" value="1" />
+        <button type="submit" class="btn btn-success" onclick="return confirm('¿Iniciar envío de correos pendientes para el periodo seleccionado?')">
+          Enviar pendientes
+        </button>
+      </form>
+
+      <form method="POST" action="/admin/mass-email/send" class="d-inline">
+        <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+        <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+        <input type="hidden" name="sendAll" value="1" />
+        <input type="hidden" name="includeSent" value="1" />
+        <button type="submit" class="btn btn-outline-danger" onclick="return confirm('¿Reenviar a TODOS (incluye ya enviados) para el periodo seleccionado?')">
+          Reenviar a todos
+        </button>
+      </form>
+
+      <div class="align-self-center text-muted small">
+        El envío se ejecuta en segundo plano. Delay por correo: <strong><%= delayMs %> ms</strong>.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Envío por departamento -->
+<div class="card shadow-sm mt-4">
+  <div class="card-header">
+    <strong>Envío por departamento</strong>
+    <div class="text-muted small">Acciones rápidas por departamento. Incluye personal de sucursales.</div>
+  </div>
+  <div class="card-body">
+    <% if (!departmentsSummary || !departmentsSummary.length) { %>
+      <div class="text-muted">No hay departamentos para mostrar.</div>
+    <% } else { %>
       <div class="table-responsive">
-        <table class="table table-sm">
+        <table class="table table-sm table-hover align-middle">
           <thead>
             <tr>
-              <th>Periodo</th>
-              <th>Inicio</th>
-              <th>Estado</th>
-              <th>Enviados</th>
-              <th>Errores</th>
+              <th>Departamento</th>
+              <th class="text-end">Total</th>
+              <th class="text-end">Con correo</th>
+              <th class="text-end">Sin correo</th>
+              <th class="text-end">Enviados</th>
+              <th class="text-end">Pendientes</th>
+              <th class="text-end">% KPIs</th>
+              <th class="text-end">% Correos</th>
+              <th style="width: 230px;">Acción</th>
             </tr>
           </thead>
           <tbody>
-            <% recentRuns.slice(0, 10).forEach(r => { %>
+            <% departmentsSummary.forEach(dep => { %>
               <tr>
-                <td><%= String(r.period_month).padStart(2,'0') %>/<%= r.period_year %></td>
-                <td><%= r.started_at ? new Date(r.started_at).toLocaleString('es-MX') : '' %></td>
+                <td><%= dep.nombre %></td>
+                <td class="text-end"><%= dep.total %></td>
+                <td class="text-end"><%= dep.withEmail %></td>
+                <td class="text-end"><%= dep.withoutEmail %></td>
+                <td class="text-end"><%= dep.emailed %></td>
+                <td class="text-end"><%= dep.pendingEmail %></td>
+                <td class="text-end"><%= dep.percent %>%</td>
+                <td class="text-end"><%= dep.emailPercent %>%</td>
                 <td>
-                  <span class="badge <%= r.is_running ? 'bg-warning text-dark' : 'bg-secondary' %>"><%= r.is_running ? 'En curso' : 'Finalizada' %></span>
+                  <div class="d-flex gap-2">
+                    <form method="POST" action="/admin/mass-email/send" class="d-inline">
+                      <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                      <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                      <input type="hidden" name="departmentIds[]" value="<%= dep.id %>" />
+                      <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('¿Enviar pendientes a ' + <%- JSON.stringify(dep.nombre) %> + '?')">Enviar</button>
+                    </form>
+                    <form method="POST" action="/admin/mass-email/send" class="d-inline">
+                      <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                      <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                      <input type="hidden" name="departmentIds[]" value="<%= dep.id %>" />
+                      <input type="hidden" name="includeSent" value="1" />
+                      <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('¿Reenviar a todo el departamento ' + <%- JSON.stringify(dep.nombre) %> + '?')">Reenviar</button>
+                    </form>
+                  </div>
                 </td>
-                <td><%= r.sent_count || 0 %>/<%= r.total_targets || 0 %></td>
-                <td><%= r.error_count || 0 %></td>
               </tr>
-            <% }); %>
+            <% }) %>
           </tbody>
         </table>
       </div>
@@ -102,167 +398,228 @@
   </div>
 </div>
 
-<script>
-  async function refreshProgress() {
-    try {
-      const res = await fetch('/admin/mass-email/progress', { credentials: 'same-origin' });
-      const data = await res.json();
-      if (!data || !data.run) {
-        document.getElementById('progress-updated').innerText = 'Sin datos';
-        return;
-      }
-      const run = data.run;
-      const pct = data.percent || 0;
-      const bar = document.querySelector('#progress-area .progress-bar');
-      if (bar) {
-        bar.style.width = pct + '%';
-        bar.setAttribute('aria-valuenow', String(pct));
-        bar.textContent = pct + '%';
-      }
-      const pSent = document.getElementById('p-sent');
-      const pTotal = document.getElementById('p-total');
-      const pErr = document.getElementById('p-err');
-      if (pSent) pSent.textContent = run.sent_count || 0;
-      if (pTotal) pTotal.textContent = run.total_targets || 0;
-      if (pErr) pErr.textContent = run.error_count || 0;
-      document.getElementById('progress-updated').innerText = 'Actualizado: ' + new Date().toLocaleTimeString('es-MX');
-    } catch (e) {
-      // No interrumpir la página
-    }
-  }
-  // Refrescar cada 10s (ligero). Si no está habilitado o no hay cron, igual se verá el último estado.
-  setInterval(refreshProgress, 10000);
-</script>
+<!-- Envío individual -->
+<div class="card shadow-sm mt-4 mb-4">
+  <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div>
+      <strong>Envío individual</strong>
+      <div class="text-muted small">Busca un empleado y envía / reenvía su correo.</div>
+    </div>
 
-<h4 class="mt-4">Enviar resultados de KPIs</h4>
-<form method="get" action="/admin/mass-email" class="row row-cols-lg-auto g-3 align-items-end mb-3">
-  <div class="col">
-    <label for="anio" class="form-label">Año</label>
-    <select name="anio" id="anio" class="form-select">
-      <% for (let y = defaultYear - 2; y <= defaultYear + 1; y++) { %>
-        <option value="<%= y %>" <%= selectedYear === y ? 'selected' : '' %>><%= y %></option>
-      <% } %>
-    </select>
+    <div class="d-flex gap-2">
+      <input id="employeeSearch" type="text" class="form-control form-control-sm" placeholder="Buscar por nombre, depto, sucursal, # empleado..." style="min-width: 280px;" />
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="filterPending" />
+        <label class="form-check-label small" for="filterPending">Solo pendientes</label>
+      </div>
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="filterNoEmail" />
+        <label class="form-check-label small" for="filterNoEmail">Solo sin correo</label>
+      </div>
+    </div>
   </div>
-  <div class="col">
-    <label for="mes" class="form-label">Mes</label>
-    <% const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']; %>
-    <select name="mes" id="mes" class="form-select">
-      <% for (let i = 1; i <= 12; i++) { %>
-        <option value="<%= i %>" <%= selectedMonth === i ? 'selected' : '' %>><%= monthNames[i - 1] %></option>
-      <% } %>
-    </select>
-  </div>
-  <div class="col">
-    <button type="submit" class="btn btn-secondary">Actualizar periodo</button>
-  </div>
-</form>
 
-<p>Total de empleados (sin sucursales ni BAJA): <strong><%= employees.length %></strong>.  Completos: <strong><%= completedCount %></strong>.  Porcentaje completado: <strong><%= completionPercent %>%</strong>.</p>
-
-<!-- Opción global para reenviar a quienes ya recibieron el correo manualmente -->
-<div class="form-check mb-3">
-  <input class="form-check-input" type="checkbox" id="includeSentGlobal">
-  <label class="form-check-label" for="includeSentGlobal">
-    Incluir a quienes ya recibieron el correo este periodo (reenvío manual)
-  </label>
+  <div class="card-body">
+    <% if (!employees || !employees.length) { %>
+      <div class="text-muted">No hay empleados para mostrar.</div>
+    <% } else { %>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle" id="employeesTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Nombre</th>
+              <th>Departamento</th>
+              <th>Sucursal</th>
+              <th class="text-end">KPIs</th>
+              <th>Estado correo</th>
+              <th style="width: 160px;">Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% employees.forEach(emp => { 
+                 const kpiLabel = emp.total_kpis ? `${emp.filled_kpis}/${emp.total_kpis}` : '—';
+                 const emailState = !emp.has_email ? 'no_email' : (emp.email_sent ? 'sent' : 'pending');
+                 const rowClass = emailState === 'no_email' ? 'table-danger' : (emailState === 'pending' ? 'table-warning' : '');
+            %>
+              <tr class="emp-row <%= rowClass %>" data-search="<%- `${emp.incidencia_id || emp.id} ${emp.nombre} ${emp.departamento_nombre || ''} ${emp.sucursal_nombre || ''}`.toLowerCase() %>" data-email-state="<%= emailState %>">
+                <td class="text-muted"><%= emp.incidencia_id || emp.id %></td>
+                <td>
+                  <div class="fw-semibold"><%= emp.nombre %></div>
+                  <div class="small text-muted"><%= emp.correo ? emp.correo : 'Sin correo' %></div>
+                </td>
+                <td><%= emp.departamento_nombre || 'Sin departamento' %></td>
+                <td><%= emp.sucursal_nombre || '—' %></td>
+                <td class="text-end">
+                  <% if (emp.completed) { %>
+                    <span class="badge bg-success">Completo</span>
+                    <span class="text-muted small">(<%= kpiLabel %>)</span>
+                  <% } else { %>
+                    <span class="badge bg-secondary">Incompleto</span>
+                    <span class="text-muted small">(<%= kpiLabel %>)</span>
+                  <% } %>
+                </td>
+                <td>
+                  <% if (!emp.has_email) { %>
+                    <span class="badge bg-danger">Sin correo</span>
+                  <% } else if (emp.email_sent) { %>
+                    <span class="badge bg-success">Enviado</span>
+                  <% } else { %>
+                    <span class="badge bg-warning text-dark">Pendiente</span>
+                  <% } %>
+                </td>
+                <td>
+                  <% if (!emp.has_email) { %>
+                    <button class="btn btn-sm btn-outline-secondary" disabled>Enviar</button>
+                  <% } else if (emp.email_sent) { %>
+                    <form method="POST" action="/admin/mass-email/send" class="d-inline">
+                      <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                      <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                      <input type="hidden" name="employeeIds[]" value="<%= emp.id %>" />
+                      <input type="hidden" name="includeSent" value="1" />
+                      <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('¿Reenviar correo a ' + <%- JSON.stringify(emp.nombre) %> + '?')">Reenviar</button>
+                    </form>
+                  <% } else { %>
+                    <form method="POST" action="/admin/mass-email/send" class="d-inline">
+                      <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                      <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                      <input type="hidden" name="employeeIds[]" value="<%= emp.id %>" />
+                      <button type="submit" class="btn btn-sm btn-primary" onclick="return confirm('¿Enviar correo a ' + <%- JSON.stringify(emp.nombre) %> + '?')">Enviar</button>
+                    </form>
+                  <% } %>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+      <div class="small text-muted mt-2">Tip: usa los switches para filtrar pendientes o sin correo. La tabla se filtra en tu navegador.</div>
+    <% } %>
+  </div>
 </div>
+
 <script>
-  (function() {
-    const toggle = document.getElementById('includeSentGlobal');
-    function updateForms() {
-      document.querySelectorAll('form.mass-send-form').forEach(form => {
-        const hidden = form.querySelector('input[name="includeSent"]');
-        if (toggle.checked) {
-          if (!hidden) {
-            const inp = document.createElement('input');
-            inp.type = 'hidden';
-            inp.name = 'includeSent';
-            inp.value = '1';
-            form.appendChild(inp);
-          }
-        } else {
-          if (hidden) hidden.remove();
-        }
+  (function () {
+    // Formateo de fechas en el navegador
+    function formatDT(el) {
+      const v = el.dataset.dt;
+      if (!v) return;
+      try {
+        const d = new Date(v);
+        if (isNaN(d.getTime())) return;
+        el.textContent = d.toLocaleString('es-MX');
+      } catch (e) {}
+    }
+    document.querySelectorAll('.dt[data-dt]').forEach(formatDT);
+
+    // Filtro de tabla de empleados
+    const search = document.getElementById('employeeSearch');
+    const filterPending = document.getElementById('filterPending');
+    const filterNoEmail = document.getElementById('filterNoEmail');
+
+    function applyFilters() {
+      const q = (search?.value || '').trim().toLowerCase();
+      const onlyPending = !!filterPending?.checked;
+      const onlyNoEmail = !!filterNoEmail?.checked;
+
+      document.querySelectorAll('#employeesTable tbody tr.emp-row').forEach(tr => {
+        const hay = tr.dataset.search || '';
+        const emailState = tr.dataset.emailState || '';
+
+        let show = true;
+        if (q && !hay.includes(q)) show = false;
+        if (onlyPending && emailState !== 'pending') show = false;
+        if (onlyNoEmail && emailState !== 'no_email') show = false;
+
+        tr.style.display = show ? '' : 'none';
       });
     }
-    if (toggle) toggle.addEventListener('change', updateForms);
+
+    [search, filterPending, filterNoEmail].forEach(el => {
+      if (!el) return;
+      el.addEventListener('input', applyFilters);
+      el.addEventListener('change', applyFilters);
+    });
+
+    // Polling de progreso
+    const runUpdated = document.getElementById('runUpdated');
+    const runStatusBadge = document.getElementById('runStatusBadge');
+    const runPeriod = document.getElementById('runPeriod');
+    const runMode = document.getElementById('runMode');
+    const runCounts = document.getElementById('runCounts');
+    const runProgressBar = document.getElementById('runProgressBar');
+    const runPercent = document.getElementById('runPercent');
+    const runBreakdown = document.getElementById('runBreakdown');
+    const runMessage = document.getElementById('runMessage');
+    const runLastError = document.getElementById('runLastError');
+
+    async function refreshProgress() {
+      try {
+        const resp = await fetch('/admin/mass-email/progress', { headers: { 'Accept': 'application/json' } });
+        const data = await resp.json();
+        if (!data || !data.run) return;
+
+        const r = data.run;
+        const pct = Number.isFinite(Number(data.percent)) ? Number(data.percent) : 0;
+        const total = Number(r.total_targets || 0);
+        const processed = Number(r.sent_count || 0) + Number(r.skipped_count || 0) + Number(r.error_count || 0);
+
+        if (runPeriod) {
+          runPeriod.textContent = String(r.period_month).padStart(2,'0') + '/' + r.period_year;
+        }
+        if (runMode) {
+          runMode.textContent = r.mode || '—';
+        }
+        if (runUpdated) {
+          runUpdated.textContent = new Date().toLocaleTimeString('es-MX');
+        }
+        if (runCounts) {
+          runCounts.textContent = processed + ' / ' + total;
+        }
+        if (runProgressBar) {
+          runProgressBar.style.width = pct + '%';
+          runProgressBar.setAttribute('aria-valuenow', String(pct));
+        }
+        if (runPercent) {
+          runPercent.textContent = pct + '%';
+        }
+        if (runBreakdown) {
+          runBreakdown.textContent = `Enviados: ${r.sent_count || 0} · Omitidos: ${r.skipped_count || 0} · Errores: ${r.error_count || 0}`;
+        }
+        if (runMessage) {
+          runMessage.textContent = r.last_message || '—';
+        }
+
+        if (runStatusBadge) {
+          if (r.is_running) {
+            runStatusBadge.className = 'badge bg-warning text-dark';
+            runStatusBadge.textContent = 'En curso';
+          } else {
+            runStatusBadge.className = 'badge bg-light text-dark border';
+            runStatusBadge.textContent = 'Finalizado';
+          }
+        }
+
+        if (runLastError) {
+          if (r.last_error) {
+            runLastError.classList.remove('d-none');
+            runLastError.innerHTML = '<strong>Último error:</strong> ' + String(r.last_error);
+          } else {
+            runLastError.classList.add('d-none');
+            runLastError.innerHTML = '';
+          }
+        }
+
+      } catch (e) {
+        // silencioso
+      }
+    }
+
+    // Refrescar cada 5s
+    setInterval(refreshProgress, 5000);
+    // Un primer refresco rápido
+    setTimeout(refreshProgress, 1000);
   })();
 </script>
 
-<div class="mb-4">
-  <form method="post" action="/admin/mass-email/send" class="d-inline mass-send-form">
-    <input type="hidden" name="anio" value="<%= selectedYear %>">
-    <input type="hidden" name="mes" value="<%= selectedMonth %>">
-    <input type="hidden" name="sendAll" value="1">
-    <button type="submit" class="btn btn-success">Enviar a todos</button>
-  </form>
-</div>
-
-<h5>Envío por departamento</h5>
-<div class="table-responsive">
-  <table class="table table-bordered table-sm">
-    <thead class="table-light">
-      <tr>
-        <th>Departamento</th>
-        <th>Total empleados</th>
-        <th>Completos</th>
-        <th>% completado</th>
-        <th>Acción</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% departmentsSummary.forEach(dep => { %>
-        <tr>
-          <td><%= dep.nombre %></td>
-          <td><%= dep.total %></td>
-          <td><%= dep.completed %></td>
-          <td><%= dep.percent %>%</td>
-          <td>
-            <form method="post" action="/admin/mass-email/send" class="d-inline mass-send-form">
-              <input type="hidden" name="anio" value="<%= selectedYear %>">
-              <input type="hidden" name="mes" value="<%= selectedMonth %>">
-              <input type="hidden" name="departmentIds[]" value="<%= dep.id %>">
-              <button type="submit" class="btn btn-sm btn-outline-primary">Enviar</button>
-            </form>
-          </td>
-        </tr>
-      <% }); %>
-    </tbody>
-  </table>
-</div>
-
-<h5>Envío individual</h5>
-<div class="table-responsive">
-  <table class="table table-bordered table-sm">
-    <thead class="table-light">
-      <tr>
-        <th>No. Empleado</th>
-        <th>Nombre</th>
-        <th>Departamento</th>
-        <th>Completado</th>
-        <th>Acción</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% employees.forEach(emp => { %>
-        <tr class="<%= emp.completed ? '' : 'table-warning' %>">
-          <td><%= emp.incidencia_id || emp.id %></td>
-          <td><%= emp.nombre %></td>
-          <td><%= emp.departamento_nombre || '' %></td>
-          <td><%= emp.completed ? 'Sí' : 'No' %></td>
-          <td>
-            <form method="post" action="/admin/mass-email/send" class="d-inline mass-send-form">
-              <input type="hidden" name="anio" value="<%= selectedYear %>">
-              <input type="hidden" name="mes" value="<%= selectedMonth %>">
-              <input type="hidden" name="employeeIds[]" value="<%= emp.id %>">
-              <button type="submit" class="btn btn-sm btn-outline-secondary">Enviar</button>
-            </form>
-          </td>
-        </tr>
-      <% }); %>
-    </tbody>
-  </table>
-</div>
-
-<%- include('partials/footer') %>
+<%- include('partials/footer'); %>

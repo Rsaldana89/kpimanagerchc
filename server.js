@@ -59,6 +59,7 @@ const kpiRoutes = require('./routes/kpis');
 const organigramaRoutes = require('./routes/organigrama');
 const branchRoutes = require('./routes/branches');
 const massEmailRoutes = require('./routes/mass_email');
+const supervisionRoutes = require('./routes/supervision');
 
 // Cargar el programador de correos.  Se ejecutará una tarea
 // recurrente para enviar automáticamente los resultados de KPIs el día
@@ -78,6 +79,8 @@ app.use('/organigrama', organigramaRoutes);
 app.use('/', branchRoutes);
 // Rutas de administración (envío masivo)
 app.use('/', massEmailRoutes);
+// Rutas para gestionar las rutas de supervisión
+app.use('/supervision', supervisionRoutes);
 
 // Ruta por defecto: redirige a dashboard si autenticado o a login.
 app.get('*', (req, res) => {

@@ -8,6 +8,12 @@
   <% if (typeof currentEmpName !== 'undefined' && String(currentEmpName || '').trim() !== '') { %>
     <span class="ms-2"><%= currentEmpName %></span>
   <% } %>
+  <% if (typeof currentRouteName !== 'undefined' && currentRouteName) { %>
+    <span class="badge bg-info text-dark ms-2">Ruta: <%= currentRouteName %></span>
+  <% } %>
+  <% if (typeof currentBranchName !== 'undefined' && currentBranchName) { %>
+    <span class="badge bg-secondary text-light ms-2">Sucursal: <%= currentBranchName %></span>
+  <% } %>
   &nbsp;—&nbsp;
   <% const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']; %>
   <%= monthNames[selectedMonth - 1] %> <%= selectedYear %>
@@ -468,12 +474,46 @@
     <input id="teamFilterInput" type="text" class="form-control form-control-sm" placeholder="Buscar en mi equipo...">
   </div>
 </div>
+
+<% if (isRouteLeader) { %>
+  <div class="card mt-3 mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+        <div>
+          <div class="fw-bold">Herramientas de Ruta</div>
+          <div class="text-muted small">
+            Ruta asignada: <%= currentRouteName || currentBranchName || '—' %>
+          </div>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <a class="btn btn-sm btn-outline-success" href="/dashboard/export/route?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period">
+            Exportar equipo (Excel)
+          </a>
+          <form class="d-flex flex-wrap align-items-center gap-2" method="post" action="/dashboard/import/route" enctype="multipart/form-data">
+            <input type="hidden" name="anio" value="<%= selectedYear %>">
+            <input type="hidden" name="mes" value="<%= selectedMonth %>">
+            <input type="file" name="file" accept=".xlsx" class="form-control form-control-sm" style="max-width:260px;" required>
+            <button type="submit" class="btn btn-sm btn-primary">Importar</button>
+          </form>
+        </div>
+      </div>
+      <div class="text-muted small mt-2">
+        Tip: descarga el Excel, captura calificaciones y comentarios, y vuelve a importarlo para guardar masivamente.
+      </div>
+    </div>
+  </div>
+<% } %>
 <% if (!subordinateTree || subordinateTree.length === 0) { %>
   <p>No tienes colaboradores asignados.</p>
 <% } else { %>
-  <% subordinateTree.forEach(node => { %>
-    <%- include('partials/sub_kpi_node', { node: node, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
-  <% }) %>
+  <% /*
+     Agrupar los colaboradores de primer nivel por sucursal para Operaciones.
+     Usamos el mismo parcial `sub_kpi_level` que ya agrupa por sucursal y ruta.
+     Esto permite que un supervisor vea sus sucursales (reales y virtuales) como tarjetas
+     individuales, cada una con los colaboradores dentro.  Si se requieren niveles
+     adicionales, éstos seguirán cargándose por AJAX desde /dashboard/subtree/.
+  */ %>
+  <%- include('partials/sub_kpi_level', { nodes: subordinateTree, selectedMonth: selectedMonth, selectedYear: selectedYear, groupBySucursal: useBranchGrouping }) %>
 <% } %>
 
 <!--

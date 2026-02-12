@@ -1,7 +1,6 @@
 const cron = require('node-cron');
-const { sendIndividualKpiResults } = require('./kpiEmail');
-const dashboardRoutes = require('../routes/dashboard');
 const { pool } = require('../db');
+const { startBatch, isRunning: isBatchRunning, getSendDelayMs } = require('./batchEmailRunner');
 
 /*
  * Programador de envío automático de KPIs.
@@ -33,6 +32,17 @@ async function scheduleMonthlyEmails() {
   let resendSent = String(process.env.EMAIL_BATCH_RESEND_SENT || '').toLowerCase() === 'true';
   let timeStr = process.env.EMAIL_BATCH_TIME || '20:00';
 
+  // Delay entre correos para evitar saturar el proveedor SMTP.
+  // Se puede ajustar con EMAIL_SEND_DELAY_MS o EMAIL_BATCH_DELAY_MS.
+  // (Por defecto: 1000ms)
+  let delayMs = getSendDelayMs();
+
+  function normalizeConfig() {
+    // Límite: 1..999 (suficiente para cubrir a toda la empresa por ahora)
+    limit = Math.min(Math.max(parseInt(limit || 150, 10), 1), 999);
+    startDay = Math.min(Math.max(parseInt(startDay || 11, 10), 1), 31);
+  }
+
   async function loadConfig() {
     try {
       const [rows] = await pool.execute('SELECT * FROM kpi_batch_config ORDER BY id DESC LIMIT 1');
@@ -47,6 +57,11 @@ async function scheduleMonthlyEmails() {
     } catch (e) {
       // Silenciar errores de lectura; se usarán valores por defecto
     }
+
+    normalizeConfig();
+
+    // Re-leer delay por si cambiaron variables de entorno.
+    delayMs = getSendDelayMs();
   }
 
   // Cargar config una vez al inicio
@@ -61,6 +76,11 @@ async function scheduleMonthlyEmails() {
   }
   // Programar la tarea cada día a la hora/minuto configurada
   const cronExpr = `${minute} ${hour} * * *`;
+  // Timezone del scheduler:
+  // - Railway suele correr en UTC; esto permite que la "Hora de envío" coincida con la hora local.
+  // - Por defecto usamos México (CDMX), pero se puede ajustar con EMAIL_SCHEDULER_TZ.
+  const timezone = process.env.EMAIL_SCHEDULER_TZ || process.env.TZ || 'America/Mexico_City';
+
   cron.schedule(cronExpr, async () => {
     try {
       const now = new Date();
@@ -74,7 +94,13 @@ async function scheduleMonthlyEmails() {
       if (now.getDate() < startDay) {
         return;
       }
-      console.log(`[KPI Scheduler] Ejecutando envío automático (enabled) (límite ${limit} / reenvío ${resendSent ? 'habilitado' : 'deshabilitado'})...`);
+      console.log(`[KPI Scheduler] Ejecutando envío automático (límite ${limit} / reenvío ${resendSent ? 'habilitado' : 'deshabilitado'} / delay ${delayMs}ms)...`);
+
+      // Evitar ejecuciones simultáneas (manual vs scheduler).
+      if (isBatchRunning()) {
+        console.log('[KPI Scheduler] Ya existe un envío en curso. Se omite esta ejecución.');
+        return;
+      }
 
       // Periodo objetivo: SIEMPRE el mes anterior (independiente del día)
       const d = new Date();
@@ -85,31 +111,22 @@ async function scheduleMonthlyEmails() {
       // si getMonth()=0 (enero) => month=12 del año anterior
       // si getMonth()=5 (junio) => month=5 (mayo)
 
-      // Registrar ejecución (progreso)
-      let runId = null;
-      try {
-        const [ins] = await pool.execute(
-          `INSERT INTO kpi_batch_runs (period_year, period_month, started_at, mode, total_targets, sent_count, skipped_count, error_count, is_running)
-           VALUES (?, ?, NOW(), 'scheduler', 0, 0, 0, 0, 1)`,
-          [year, month]
-        );
-        runId = ins.insertId;
-      } catch (e) {
-        // Si la tabla no existe, continuar sin tracking
-      }
       // Seleccionar empleados con correo no enviados en el periodo, hasta el límite establecido
+      // IMPORTANTE:
+      // En algunas instalaciones, MySQL puede fallar al usar placeholders en LIMIT.
+      // Para evitar "Incorrect arguments to mysqld_stmt_execute", interpolamos un
+      // LIMIT numérico ya normalizado (1..999) y mantenemos placeholders para el periodo.
       const [unsentRows] = await pool.execute(
         `SELECT e.id FROM empleados e
          LEFT JOIN departamentos d ON e.departamento_id = d.id
          WHERE e.correo IS NOT NULL AND e.correo <> ''
-           AND e.sucursal_id IS NULL
            AND (d.nombre IS NULL OR d.nombre <> 'BAJA')
            AND e.id NOT IN (
              SELECT empleado_id FROM kpi_emails_sent WHERE anio = ? AND mes = ?
            )
          ORDER BY e.id
-         LIMIT ?`,
-        [year, month, limit]
+         LIMIT ${Number(limit)}`,
+        [year, month]
       );
       let employeeIds = unsentRows.map(r => r.id);
       let force = false;
@@ -121,11 +138,10 @@ async function scheduleMonthlyEmails() {
            LEFT JOIN departamentos d ON e.departamento_id = d.id
            WHERE s.anio = ? AND s.mes = ?
              AND e.correo IS NOT NULL AND e.correo <> ''
-             AND e.sucursal_id IS NULL
              AND (d.nombre IS NULL OR d.nombre <> 'BAJA')
            ORDER BY e.id
-           LIMIT ?`,
-          [year, month, limit]
+           LIMIT ${Number(limit)}`,
+          [year, month]
         );
         employeeIds = sentRows.map(r => r.id);
         force = true;
@@ -134,46 +150,30 @@ async function scheduleMonthlyEmails() {
         console.log(`[KPI Scheduler] No hay empleados pendientes ni reenviables para ${month}/${year}.`);
         return;
       }
-      let sentCount = 0;
-      let errCount = 0;
-      // Actualizar total_targets al arrancar
-      if (runId) {
-        try {
-          await pool.execute('UPDATE kpi_batch_runs SET total_targets = ? WHERE id = ?', [employeeIds.length, runId]);
-        } catch (e) {}
-      }
-      for (const empId of employeeIds) {
-        try {
-          await sendIndividualKpiResults({ employeeId: empId, year, month, force });
-          sentCount++;
-          if (runId) {
-            try {
-              await pool.execute('UPDATE kpi_batch_runs SET sent_count = ? WHERE id = ?', [sentCount, runId]);
-            } catch (e) {}
-          }
-        } catch (err) {
-          console.error(`[KPI Scheduler] Error enviando a ${empId}:`, err.message);
-          errCount++;
-          if (runId) {
-            try {
-              await pool.execute('UPDATE kpi_batch_runs SET error_count = ? WHERE id = ?', [errCount, runId]);
-            } catch (e) {}
-          }
+
+      try {
+        const kind = force ? 'reenvío' : 'pendientes';
+        const { runId, totalTargets } = await startBatch({
+          year,
+          month,
+          mode: 'scheduler',
+          employeeIds,
+          force,
+          delayMs,
+          message: `Scheduler ${kind} ${month}/${year} - targets=${employeeIds.length}`
+        });
+        console.log(`[KPI Scheduler] Envío iniciado (runId=${runId || 'N/A'}) - destinatarios: ${totalTargets}`);
+      } catch (e) {
+        if (e && e.code === 'BATCH_ALREADY_RUNNING') {
+          console.log('[KPI Scheduler] Ya hay un envío en curso. Se omite esta ejecución.');
+          return;
         }
+        console.error('[KPI Scheduler] No se pudo iniciar el envío:', e);
       }
-      if (runId) {
-        try {
-          await pool.execute(
-            'UPDATE kpi_batch_runs SET finished_at = NOW(), is_running = 0, last_message = ? WHERE id = ?',
-            [`Completado: enviados=${sentCount} errores=${errCount} (${force ? 'reenvío' : 'pendientes'})`, runId]
-          );
-        } catch (e) {}
-      }
-      console.log(`[KPI Scheduler] Envío automático diario completado (${force ? 'reenvío' : 'pendientes'}). Correos enviados: ${sentCount} (errores: ${errCount})`);
     } catch (err) {
       console.error('[KPI Scheduler] Error en ejecución:', err);
     }
-  });
+  }, { timezone });
 }
 
 module.exports = { scheduleMonthlyEmails };

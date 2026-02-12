@@ -55,6 +55,18 @@
     <% if (node.empleado.departamento_nombre) { %>
       - <%= node.empleado.departamento_nombre %>
     <% } %>
+    <% /* Mostrar ruta y sucursal para claridad: si la ruta coincide con la sucursal (caso de sucursales virtuales), mostramos solo una vez. */ %>
+    <% if (node.empleado.ruta_nombre || node.empleado.sucursal_nombre) { %>
+      <span class="badge bg-info text-dark ms-1">
+        <% if (node.empleado.ruta_nombre && node.empleado.sucursal_nombre && node.empleado.ruta_nombre !== node.empleado.sucursal_nombre) { %>
+          Ruta: <%= node.empleado.ruta_nombre %> · Sucursal: <%= node.empleado.sucursal_nombre %>
+        <% } else if (node.empleado.ruta_nombre) { %>
+          Ruta: <%= node.empleado.ruta_nombre %>
+        <% } else { %>
+          Sucursal: <%= node.empleado.sucursal_nombre %>
+        <% } %>
+      </span>
+    <% } %>
     <!-- Mostrar total ponderado y color general al lado del nombre -->
     <span class="badge bg-light text-dark border ms-2" data-sub-total-weighted><%= __totalFormatted %></span>
     <span class="badge <%= __generalColorClass %> ms-1" data-sub-total-color><%= __generalText %></span>
