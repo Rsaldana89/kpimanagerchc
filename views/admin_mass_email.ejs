@@ -32,6 +32,34 @@
   </div>
 </div>
 
+<% if (errors && errors.length) { %>
+  <div class="alert alert-danger"> <%= errors[0] %> </div>
+<% } %>
+<% if (messages && messages.length) { %>
+  <div class="alert alert-success"> <%= messages[0] %> </div>
+<% } %>
+
+<% const _hasRunning = !!(lastRun && lastRun.is_running); %>
+<% if (_hasRunning) { %>
+  <div id="runningAlert" class="alert <%= isStuck ? 'alert-warning' : 'alert-danger' %> d-flex align-items-start justify-content-between flex-wrap gap-2">
+    <div>
+      <div class="fw-semibold">Ya hay un envío en curso.</div>
+      <div class="small">
+        <% if (isStuck) { %>
+          Parece que está <strong>trabado</strong> o quedó marcado como “En curso”.
+          (<%= stuckForMin %> min, umbral: <%= stuckThresholdMin %> min)
+        <% } else { %>
+          Espera a que termine para iniciar otro.
+        <% } %>
+      </div>
+    </div>
+    <form id="cancelRunForm" method="POST" action="/admin/mass-email/cancel" onsubmit="return confirm('¿Cancelar el envío en curso?');">
+      <input type="hidden" name="reason" value="Cancelado por el administrador" />
+      <button class="btn btn-outline-dark btn-sm" type="submit">Cancelar envío</button>
+    </form>
+  </div>
+<% } %>
+
 <div class="row g-3">
   <!-- Configuración automática -->
   <div class="col-lg-6">
@@ -552,6 +580,7 @@
     const runBreakdown = document.getElementById('runBreakdown');
     const runMessage = document.getElementById('runMessage');
     const runLastError = document.getElementById('runLastError');
+    const runningAlert = document.getElementById('runningAlert');
 
     async function refreshProgress() {
       try {
@@ -598,6 +627,12 @@
             runStatusBadge.className = 'badge bg-light text-dark border';
             runStatusBadge.textContent = 'Finalizado';
           }
+        }
+
+        // Si el envío terminó (o fue cancelado), ocultar el aviso rojo/amarillo
+        // sin requerir recarga de página.
+        if (runningAlert) {
+          runningAlert.style.display = r.is_running ? '' : 'none';
         }
 
         if (runLastError) {

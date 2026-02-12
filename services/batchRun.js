@@ -221,11 +221,29 @@ async function findRunningRun() {
   }
 }
 
+/**
+ * Marca como finalizada (cancelada) la ejecución en curso más reciente.
+ * No altera la base de datos; solo actualiza columnas existentes.
+ */
+async function cancelRunningRun(reason = 'Cancelado por el administrador') {
+  const running = await findRunningRun();
+  if (!running) return { canceled: false, runId: null };
+
+  await updateBatchRun(running.id, {
+    is_running: 0,
+    finished_at: 'NOW',
+    last_message: String(reason).slice(0, 255)
+  });
+
+  return { canceled: true, runId: running.id };
+}
+
 module.exports = {
   getBatchRunsColumnsSafe,
   insertBatchRun,
   updateBatchRun,
   fetchRecentRuns,
   fetchLatestRun,
-  findRunningRun
+  findRunningRun,
+  cancelRunningRun
 };

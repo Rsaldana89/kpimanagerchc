@@ -54,11 +54,29 @@ const transporter = nodemailer.createTransport({
  * @param {Array} [param0.attachments] Lista de adjuntos ({ filename, content, contentType }).
  * @returns {Promise<Object>} Resultado de nodemailer.
  */
-async function sendEmail({ to, subject, text, html, attachments = [] }) {
-  // Soportar también MAIL_FROM por compatibilidad con despliegues previos.
-  const from = process.env.EMAIL_FROM || process.env.MAIL_FROM || process.env.SMTP_USER || '';
+function resolveFromAddress() {
+  // Prioridad:
+  // 1) EMAIL_FROM (recomendado)
+  // 2) BREVO_FROM / SMTP_FROM (por si en Railway usas otro nombre)
+  // 3) SMTP_USER (último recurso)
+  const from =
+    process.env.EMAIL_FROM ||
+    process.env.BREVO_FROM ||
+    process.env.SMTP_FROM ||
+    process.env.SMTP_USER ||
+    '';
+  return String(from).trim();
+}
+
+async function sendEmail({ to, subject, text, html, attachments = [], from }) {
+  // Permitir override explícito de "from" por llamada.
+  const resolvedFrom = String(from || resolveFromAddress()).trim();
+  if (!resolvedFrom) {
+    // No rompemos el envío, pero avisamos en log.
+    console.warn('[EmailService] EMAIL_FROM vacío. Revisa variables de entorno.');
+  }
   const mailOptions = {
-    from,
+    from: resolvedFrom,
     to,
     subject,
     text,
@@ -69,5 +87,6 @@ async function sendEmail({ to, subject, text, html, attachments = [] }) {
 }
 
 module.exports = {
-  sendEmail
+  sendEmail,
+  resolveFromAddress
 };

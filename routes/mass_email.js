@@ -3,7 +3,14 @@ const router = express.Router();
 const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
-const { startBatch, isRunning: isBatchRunning, getSendDelayMs } = require('../services/batchEmailRunner');
+const { startBatch, cancelBatch, isRunning: isBatchRunning, getSendDelayMs } = require('../services/batchEmailRunner');
+
+function getStuckMinutes() {
+  const env = process.env.EMAIL_BATCH_STUCK_MINUTES;
+  const n = Number(env);
+  if (!Number.isFinite(n) || n <= 0) return 30;
+  return Math.min(1440, Math.max(5, Math.trunc(n)));
+}
 
 // =========================================================
 // Utilidades
@@ -296,6 +303,21 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
       // tabla no existe en ese entorno
     }
 
+    const stuckThresholdMin = getStuckMinutes();
+    let isStuck = false;
+    let stuckForMin = 0;
+    if (currentRun && currentRun.started_at) {
+      const t = new Date(currentRun.started_at).getTime();
+      if (Number.isFinite(t)) {
+        stuckForMin = Math.max(0, Math.floor((Date.now() - t) / 60000));
+        if (stuckForMin >= stuckThresholdMin) isStuck = true;
+      }
+    }
+    // Si DB dice que hay uno corriendo pero este proceso NO lo está ejecutando,
+    // lo tratamos como posible "trabado" para que el admin pueda cancelarlo.
+    const isSendingNow = isBatchRunning();
+    if (currentRun && !isSendingNow) isStuck = true;
+
     const { employees, departments, stats } = await fetchEmployeesStatus({ year, month });
 
     // Compatibilidad con la vista (nombres esperados)
@@ -328,7 +350,10 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
       recentRuns,
       currentRun,
       delayMs,
-      isSendingNow: isBatchRunning(),
+      isSendingNow,
+      isStuck,
+      stuckForMin,
+      stuckThresholdMin,
       messages: req.flash('info'),
       errors: req.flash('error')
     });
@@ -354,6 +379,19 @@ router.post('/admin/mass-email/config', isAuth, requireRole(['admin']), async (r
     req.flash('error', 'No se pudo guardar la configuración.');
   }
   res.redirect('/admin/mass-email');
+});
+
+// Cancelar ejecución en curso (o estado trabado en DB)
+router.post('/admin/mass-email/cancel', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const reason = req.body.reason || 'Cancelado por el administrador';
+    await cancelBatch(reason);
+    req.flash('info', 'Envío cancelado. Ya puedes iniciar uno nuevo.');
+  } catch (err) {
+    console.error('[MassEmail] Error al cancelar envío:', err);
+    req.flash('error', 'No se pudo cancelar el envío. Revisa los logs.');
+  }
+  return res.redirect('/admin/mass-email');
 });
 
 router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req, res) => {

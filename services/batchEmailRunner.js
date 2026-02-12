@@ -2,6 +2,8 @@ const { sendIndividualKpiResults } = require('./kpiEmail');
 const batchRun = require('./batchRun');
 
 let __isRunning = false;
+let __cancelRequested = false;
+let __activeRunId = null;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -142,6 +144,7 @@ async function runEmailBatch({
 
   async function worker() {
     while (queue.length) {
+      if (__cancelRequested) break;
       const empId = queue.shift();
       if (!empId) continue;
       try {
@@ -172,6 +175,24 @@ async function runEmailBatch({
 
   const workers = Array.from({ length: concurrency }, () => worker());
   await Promise.all(workers);
+
+  // Si fue cancelado, marcamos como finalizado con mensaje claro.
+  if (__cancelRequested) {
+    lastError = lastError || 'Cancelado por el administrador';
+    if (runId) {
+      const msg = `Cancelado | Procesados: ${sent + skipped + errors}/${total} | Enviados: ${sent} | Omitidos: ${skipped} | Errores: ${errors} (${paceCfg.label})`;
+      await batchRun.updateBatchRun(runId, {
+        is_running: 0,
+        finished_at: 'NOW',
+        sent_count: sent,
+        skipped_count: skipped,
+        error_count: errors,
+        last_message: msg,
+        last_error: lastError || null
+      });
+    }
+    return { sent, skipped, errors, total, canceled: true, pace: paceCfg.key, concurrency, delayMs };
+  }
 
   // Reporte final
   await reportProgress();
@@ -238,6 +259,8 @@ async function startBatch({
 
   const task = async () => {
     __isRunning = true;
+    __cancelRequested = false;
+    __activeRunId = runId;
     try {
       return await runEmailBatch({
         runId,
@@ -251,6 +274,8 @@ async function startBatch({
       });
     } finally {
       __isRunning = false;
+      __activeRunId = null;
+      __cancelRequested = false;
     }
   };
 
@@ -263,6 +288,29 @@ async function startBatch({
   return { runId, totalTargets: ids.length, summary };
 }
 
+/**
+ * Solicita la cancelación del lote en curso (si existe). La cancelación es
+ * cooperativa: se detiene antes del siguiente correo.
+ * También intenta cancelar cualquier ejecución marcada como "running" en DB
+ * (útil si el proceso se reinició y quedó el estado trabado).
+ */
+async function cancelBatch(reason = 'Cancelado por el administrador') {
+  __cancelRequested = true;
+  // Si hay ejecución activa en memoria, actualizamos también el registro.
+  if (__activeRunId) {
+    await batchRun.updateBatchRun(__activeRunId, {
+      last_message: String(reason).slice(0, 255)
+    });
+  }
+  // Y de todas maneras, por seguridad, cancelamos la ejecución "running" en DB.
+  try {
+    await batchRun.cancelRunningRun(String(reason));
+  } catch (e) {
+    // ignore
+  }
+  return { requested: true };
+}
+
 module.exports = {
   // API de alto nivel
   startBatch,
@@ -271,6 +319,7 @@ module.exports = {
   // Utilidades / compat
   resolvePace,
   isRunning,
+  cancelBatch,
   getSendDelayMs,
   getSendConcurrency
 };
