@@ -631,8 +631,12 @@
 
         // Si el envío terminó (o fue cancelado), ocultar el aviso rojo/amarillo
         // sin requerir recarga de página.
-        if (runningAlert) {
-          runningAlert.style.display = r.is_running ? '' : 'none';
+        // Nota: en algunos navegadores / escenarios el display no se actualiza bien
+        // (por estilos de Bootstrap). Forzamos a remover el elemento del DOM.
+        if (runningAlert && !r.is_running) {
+          runningAlert.remove();
+        } else if (runningAlert && r.is_running) {
+          runningAlert.style.display = '';
         }
 
         if (runLastError) {
