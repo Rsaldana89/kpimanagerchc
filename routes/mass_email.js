@@ -508,7 +508,9 @@ router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req
       employeeIds,
       force,
       delayMs,
-      message
+      message,
+      // Enviar archivos en formato PDF para envíos masivos
+      attachmentFormat: 'pdf'
     });
 
     req.flash('info', `Envío iniciado (${kindLabel}). Destinatarios: ${employeeIds.length}.`);

@@ -193,16 +193,27 @@ router.get('/routes/:rutaId/employees', isAuth, requireRole(['admin', 'manager']
     }
 
     // Los responsables de ruta viven en la sucursal virtual: SUPERVISION X
+    // Además, incluir empleados asignados a la ruta mediante la tabla empleado_supervision_ruta
+    // Seleccionar todos los empleados asignados a la ruta.
+    // Incluye:
+    //   1) Empleados de la sucursal virtual SUPERVISION X (cualquier puesto)
+    //   2) Empleados asignados a la ruta mediante empleado_supervision_ruta (cualquier puesto)
     const [rows] = await pool.execute(
-      `SELECT e.id, e.nombre, e.puesto_id, p.nombre AS puesto
+      `SELECT DISTINCT e.id, e.nombre, e.puesto_id, p.nombre AS puesto
        FROM empleados e
        JOIN puestos p ON p.id = e.puesto_id
        LEFT JOIN departamentos d ON d.id = e.departamento_id
-       WHERE e.sucursal_id = ?
-         AND e.puesto_id IN (46, 45)
+       WHERE (
+         e.sucursal_id = ?
+         OR e.id IN (
+           SELECT esr.empleado_id
+           FROM empleado_supervision_ruta esr
+           WHERE esr.ruta_id = ? AND esr.activo = 1
+         )
+       )
          AND (d.nombre IS NULL OR UPPER(d.nombre) <> 'BAJA')
-       ORDER BY FIELD(e.puesto_id, 46, 45), e.nombre`,
-      [rutaInfo.virtualSucursalId]
+       ORDER BY e.nombre`,
+      [rutaInfo.virtualSucursalId, rutaId]
     );
     return res.json({ ok: true, employees: rows, virtualSucursalId: rutaInfo.virtualSucursalId });
   } catch (err) {

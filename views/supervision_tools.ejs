@@ -1,0 +1,412 @@
+<%- include('partials/header', { title: 'Rutas' }) %>
+
+<h2 class="mb-3">Administración de rutas de supervisión y KPIs</h2>
+
+<p>En esta sección los administradores pueden asignar sucursales y colaboradores a cada ruta de supervisión (1–6) y exportar o importar los resultados de KPIs por periodo.</p>
+
+<!-- Sección de exportación / importación por periodo -->
+<div class="card mb-4">
+  <div class="card-body">
+    <h4 class="h6 mb-2">Exportar e importar KPIs por periodo</h4>
+    <div class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label for="year-select" class="form-label mb-0">Año:</label>
+        <select id="year-select" class="form-select form-select-sm"></select>
+      </div>
+      <div class="col-auto">
+        <label for="month-select" class="form-label mb-0">Mes:</label>
+        <select id="month-select" class="form-select form-select-sm"></select>
+      </div>
+      <div class="col-auto">
+        <a id="export-all-btn" class="btn btn-sm btn-outline-success" href="#">Exportar todas las rutas (Excel)</a>
+      </div>
+      <div class="col-auto">
+        <form id="import-form" method="post" action="/admin/supervision/import" enctype="multipart/form-data" class="d-flex align-items-center gap-2 flex-wrap">
+          <input type="hidden" name="anio" id="import-year">
+          <input type="hidden" name="mes" id="import-month">
+          <input type="file" name="file" accept=".xlsx" class="form-control form-control-sm" required style="max-width:260px;">
+          <button type="submit" class="btn btn-sm btn-primary">Importar (Excel)</button>
+        </form>
+      </div>
+    </div>
+    <div class="text-muted small mt-2">
+      Exporta el documento, captura calificaciones y comentarios y vuelve a importarlo para guardar resultados masivamente.
+    </div>
+  </div>
+</div>
+
+<hr>
+
+<h3 class="mb-3">Administrar rutas de supervisión</h3>
+<p>Seleccione una ruta para asignar sucursales y colaboradores elegibles. Utilice el resumen para ver el supervisor asignado y la cantidad de sucursales.</p>
+
+<!-- Resumen de rutas: tabla dinámica -->
+<div id="supervision-summary" class="mb-3"></div>
+
+<!-- Gestión detallada de una ruta -->
+<div id="supervision-management-container" style="display:none;">
+  <h4 class="mt-3">Editar ruta de supervisión</h4>
+  <p class="mb-2">Seleccione una ruta para asignar sucursales y colaboradores.</p>
+  <div id="supervision-management" class="mb-4">
+    <div class="row row-cols-lg-auto g-2 align-items-center mb-2">
+      <div class="col-12 col-lg-3">
+        <label for="supervision-route-select" class="form-label fw-bold mb-0">Ruta:</label>
+        <select id="supervision-route-select" class="form-select form-select-sm">
+          <option value="">Selecciona una ruta...</option>
+        </select>
+      </div>
+      <div class="col-12 col-lg-3">
+        <label for="supervision-branch-select" class="form-label fw-bold mb-0">Sucursal:</label>
+        <select id="supervision-branch-select" class="form-select form-select-sm" disabled>
+          <option value="">Selecciona una sucursal...</option>
+        </select>
+      </div>
+      <div class="col-12 col-lg-auto">
+        <button type="button" class="btn btn-success btn-sm" id="supervision-add-branch-btn" disabled>Agregar sucursal</button>
+      </div>
+      <div class="col-12 col-lg-3">
+        <label for="supervision-employee-select" class="form-label fw-bold mb-0">Supervisor:</label>
+        <select id="supervision-employee-select" class="form-select form-select-sm" disabled>
+          <option value="">Selecciona un supervisor...</option>
+        </select>
+      </div>
+      <div class="col-12 col-lg-auto">
+        <button type="button" class="btn btn-success btn-sm" id="supervision-add-employee-btn" disabled>Asignar supervisor</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-md-6 mb-3">
+        <h5>Sucursales asignadas</h5>
+        <table class="table table-sm table-bordered mb-1">
+          <thead>
+            <tr><th>Sucursal</th><th class="text-center" style="width:60px;">Acción</th></tr>
+          </thead>
+          <tbody id="supervision-assigned-branches-list">
+            <!-- generado por JS -->
+          </tbody>
+        </table>
+      </div>
+      <div class="col-md-6 mb-3">
+        <h5>Empleados asignados</h5>
+        <table class="table table-sm table-bordered mb-1">
+          <thead>
+            <tr><th>Empleado</th><th>Puesto</th><th class="text-center" style="width:60px;">Acción</th></tr>
+          </thead>
+          <tbody id="supervision-assigned-employees-list">
+            <!-- generado por JS -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // --- Periodo dinámico ---
+  const yearSelect = document.getElementById('year-select');
+  const monthSelect = document.getElementById('month-select');
+  const exportBtn = document.getElementById('export-all-btn');
+  const importYear = document.getElementById('import-year');
+  const importMonth = document.getElementById('import-month');
+  const currentYear = Number(<%= selectedYear %>);
+  const currentMonth = Number(<%= selectedMonth %>);
+  // Llenar años: dos años antes y uno después del actual
+  for (let y = currentYear - 2; y <= currentYear + 1; y++) {
+    const opt = document.createElement('option');
+    opt.value = y;
+    opt.textContent = y;
+    if (y === currentYear) opt.selected = true;
+    yearSelect.appendChild(opt);
+  }
+  // Llenar meses
+  const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  for (let i = 1; i <= 12; i++) {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = monthNames[i - 1];
+    if (i === currentMonth) opt.selected = true;
+    monthSelect.appendChild(opt);
+  }
+  function updateExportImport() {
+    const y = yearSelect.value;
+    const m = monthSelect.value;
+    // Establecer la URL de exportación correcta para la página de administración.  El
+    // endpoint es /admin/supervision/export, no /supervision/admin/export.
+    exportBtn.href = '/admin/supervision/export?anio=' + y + '&mes=' + m;
+    importYear.value = y;
+    importMonth.value = m;
+  }
+  yearSelect.addEventListener('change', updateExportImport);
+  monthSelect.addEventListener('change', updateExportImport);
+  updateExportImport();
+
+  // --- Gestión de rutas ---
+  const routeSelect = document.getElementById('supervision-route-select');
+  const branchSelect = document.getElementById('supervision-branch-select');
+  const addBranchBtn = document.getElementById('supervision-add-branch-btn');
+  const employeeSelect = document.getElementById('supervision-employee-select');
+  const addEmployeeBtn = document.getElementById('supervision-add-employee-btn');
+  const branchListBody = document.getElementById('supervision-assigned-branches-list');
+  const employeeListBody = document.getElementById('supervision-assigned-employees-list');
+  // Cargar rutas
+  async function loadRoutes() {
+    try {
+      const resp = await fetch('/supervision/routes');
+      const data = await resp.json();
+      routeSelect.innerHTML = '<option value="">Selecciona una ruta...</option>';
+      (data.routes || []).forEach(function(rt) {
+        const opt = document.createElement('option');
+        opt.value = rt.id;
+        opt.textContent = rt.nombre || ('Ruta ' + rt.id);
+        routeSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('Error al cargar rutas:', e);
+    }
+  }
+  async function loadBranches() {
+    try {
+      const resp = await fetch('/branches');
+      const data = await resp.json();
+      branchSelect.innerHTML = '<option value="">Selecciona una sucursal...</option>';
+      (data.branches || []).forEach(function(br) {
+        const opt = document.createElement('option');
+        opt.value = br.id;
+        opt.textContent = br.nombre || '';
+        branchSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('Error al cargar sucursales para rutas:', e);
+    }
+  }
+  async function loadEligibleEmployees() {
+    try {
+      const resp = await fetch('/supervision/eligible-employees');
+      const data = await resp.json();
+      employeeSelect.innerHTML = '<option value="">Selecciona un supervisor...</option>';
+      (data.employees || []).forEach(function(emp) {
+        const opt = document.createElement('option');
+        opt.value = emp.id;
+        opt.textContent = emp.nombre + ' (' + (emp.puesto || '') + ')';
+        employeeSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('Error al cargar empleados elegibles:', e);
+    }
+  }
+  // Cargar asignaciones
+  async function loadAssignedForRoute(rutaId) {
+    branchListBody.innerHTML = '';
+    employeeListBody.innerHTML = '';
+    if (!rutaId) {
+      branchSelect.disabled = true;
+      addBranchBtn.disabled = true;
+      employeeSelect.disabled = true;
+      addEmployeeBtn.disabled = true;
+      return;
+    }
+    branchSelect.disabled = false;
+    addBranchBtn.disabled = false;
+    employeeSelect.disabled = false;
+    addEmployeeBtn.disabled = false;
+    try {
+      const respBranches = await fetch('/supervision/routes/' + rutaId + '/branches');
+      const dataBranches = await respBranches.json();
+      (dataBranches.branches || []).forEach(function(br) {
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = br.nombre || '';
+        const tdAction = document.createElement('td');
+        tdAction.className = 'text-center';
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.setAttribute('data-branch-id', br.id);
+        delBtn.innerHTML = '🗑️';
+        tdAction.appendChild(delBtn);
+        tr.appendChild(tdName);
+        tr.appendChild(tdAction);
+        branchListBody.appendChild(tr);
+      });
+      const respEmp = await fetch('/supervision/routes/' + rutaId + '/employees');
+      const dataEmp = await respEmp.json();
+      (dataEmp.employees || []).forEach(function(emp) {
+        const tr = document.createElement('tr');
+        const tdName = document.createElement('td');
+        tdName.textContent = emp.nombre || '';
+        const tdPuesto = document.createElement('td');
+        tdPuesto.textContent = emp.puesto || '';
+        const tdAction = document.createElement('td');
+        tdAction.className = 'text-center';
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.setAttribute('data-emp-id', emp.id);
+        delBtn.innerHTML = '🗑️';
+        tdAction.appendChild(delBtn);
+        tr.appendChild(tdName);
+        tr.appendChild(tdPuesto);
+        tr.appendChild(tdAction);
+        employeeListBody.appendChild(tr);
+      });
+    } catch (e) {
+      console.error('Error al cargar asignaciones para la ruta:', e);
+    }
+  }
+  // Resumen
+  async function loadSummary() {
+    const summaryDiv = document.getElementById('supervision-summary');
+    summaryDiv.innerHTML = '';
+    try {
+      const respRoutes = await fetch('/supervision/routes');
+      const dataRoutes = await respRoutes.json();
+      const routes = dataRoutes.routes || [];
+      if (!routes.length) {
+        summaryDiv.innerHTML = '<p class="text-muted">No hay rutas definidas.</p>';
+        return;
+      }
+      const table = document.createElement('table');
+      table.className = 'table table-sm table-bordered align-middle';
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th>Ruta</th><th>Supervisor</th><th># Sucursales</th><th>Acciones</th></tr>';
+      const tbody = document.createElement('tbody');
+      for (const rt of routes) {
+        const rutaId = rt.id;
+        const [empsData, branchesData] = await Promise.all([
+          fetch('/supervision/routes/' + rutaId + '/employees').then(r => r.json()),
+          fetch('/supervision/routes/' + rutaId + '/branches').then(r => r.json())
+        ]);
+        const employees = (empsData.employees || []);
+        const branches = (branchesData.branches || []);
+        const supervisors = employees.filter(emp => Number(emp.puesto_id) === 46);
+        const supervisorName = supervisors.length ? supervisors[0].nombre : null;
+        const branchCount = branches.length;
+        const tr = document.createElement('tr');
+        const tdRuta = document.createElement('td');
+        tdRuta.textContent = rutaId;
+        const tdSup = document.createElement('td');
+        if (supervisorName) {
+          tdSup.innerHTML = '<span class="badge bg-dark me-2">Supervisor</span>' + supervisorName;
+        } else {
+          tdSup.innerHTML = '<span class="text-muted">Sin supervisor asignado</span>';
+        }
+        const tdBranches = document.createElement('td');
+        tdBranches.textContent = branchCount.toString();
+        const tdAction = document.createElement('td');
+        const btnEdit = document.createElement('button');
+        btnEdit.type = 'button';
+        btnEdit.className = 'btn btn-sm btn-primary';
+        btnEdit.setAttribute('data-route-id', rutaId);
+        btnEdit.textContent = 'Editar';
+        tdAction.appendChild(btnEdit);
+        tr.appendChild(tdRuta);
+        tr.appendChild(tdSup);
+        tr.appendChild(tdBranches);
+        tr.appendChild(tdAction);
+        tbody.appendChild(tr);
+      }
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      summaryDiv.appendChild(table);
+    } catch (e) {
+      console.error('Error al cargar resumen de rutas:', e);
+      summaryDiv.innerHTML = '<p class="text-danger">Error al cargar resumen de rutas.</p>';
+    }
+  }
+  // Inicializar
+  loadRoutes();
+  loadBranches();
+  loadEligibleEmployees();
+  loadSummary();
+  // Cambios de ruta
+  routeSelect.addEventListener('change', function() {
+    const rutaId = routeSelect.value;
+    loadAssignedForRoute(rutaId);
+  });
+  // Asignar sucursal
+  addBranchBtn.addEventListener('click', async function() {
+    const rutaId = routeSelect.value;
+    const branchId = branchSelect.value;
+    if (!rutaId || !branchId) return;
+    addBranchBtn.disabled = true;
+    try {
+      await fetch('/supervision/routes/' + rutaId + '/branches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branchId: branchId })
+      });
+    } catch (e) {
+      console.error('Error al asignar sucursal a la ruta:', e);
+    }
+    branchSelect.value = '';
+    addBranchBtn.disabled = false;
+    loadAssignedForRoute(rutaId);
+    loadSummary();
+  });
+  // Asignar empleado
+  addEmployeeBtn.addEventListener('click', async function() {
+    const rutaId = routeSelect.value;
+    const empId = employeeSelect.value;
+    if (!rutaId || !empId) return;
+    addEmployeeBtn.disabled = true;
+    try {
+      await fetch('/supervision/routes/' + rutaId + '/employees', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employeeId: empId })
+      });
+    } catch (e) {
+      console.error('Error al asignar empleado a la ruta:', e);
+    }
+    employeeSelect.value = '';
+    addEmployeeBtn.disabled = false;
+    loadAssignedForRoute(rutaId);
+    loadSummary();
+  });
+  // Eliminar sucursal
+  branchListBody.addEventListener('click', async function(ev) {
+    const btn = ev.target.closest('button[data-branch-id]');
+    if (!btn) return;
+    const rutaId = routeSelect.value;
+    const branchId = btn.getAttribute('data-branch-id');
+    btn.disabled = true;
+    try {
+      await fetch('/supervision/routes/' + rutaId + '/branches/' + branchId, { method: 'DELETE' });
+    } catch (e) {
+      console.error('Error al eliminar sucursal de la ruta:', e);
+    }
+    loadAssignedForRoute(rutaId);
+    loadSummary();
+  });
+  // Eliminar empleado
+  employeeListBody.addEventListener('click', async function(ev) {
+    const btn = ev.target.closest('button[data-emp-id]');
+    if (!btn) return;
+    const rutaId = routeSelect.value;
+    const empId = btn.getAttribute('data-emp-id');
+    btn.disabled = true;
+    try {
+      await fetch('/supervision/routes/' + rutaId + '/employees/' + empId, { method: 'DELETE' });
+    } catch (e) {
+      console.error('Error al eliminar empleado de la ruta:', e);
+    }
+    loadAssignedForRoute(rutaId);
+    loadSummary();
+  });
+  // Click en tabla resumen para editar
+  document.getElementById('supervision-summary').addEventListener('click', function(ev) {
+    const btn = ev.target.closest('button[data-route-id]');
+    if (!btn) return;
+    const rutaId = btn.getAttribute('data-route-id');
+    routeSelect.value = rutaId;
+    const managementContainer = document.getElementById('supervision-management-container');
+    if (managementContainer) {
+      managementContainer.style.display = '';
+    }
+    loadAssignedForRoute(rutaId);
+  });
+});
+</script>
+
+<%- include('partials/footer') %>

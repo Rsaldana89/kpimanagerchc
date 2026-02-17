@@ -160,7 +160,9 @@ async function scheduleMonthlyEmails() {
           employeeIds,
           force,
           delayMs,
-          message: `Scheduler ${kind} ${month}/${year} - targets=${employeeIds.length}`
+          message: `Scheduler ${kind} ${month}/${year} - targets=${employeeIds.length}`,
+          // Para envíos automáticos enviar PDF en lugar de Excel
+          attachmentFormat: 'pdf'
         });
         console.log(`[KPI Scheduler] Envío iniciado (runId=${runId || 'N/A'}) - destinatarios: ${totalTargets}`);
       } catch (e) {

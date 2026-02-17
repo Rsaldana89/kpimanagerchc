@@ -468,41 +468,15 @@
 <div class="d-flex flex-wrap align-items-end justify-content-between gap-2">
   <div>
     <h3 class="mb-0">KPIs de mi equipo</h3>
-    <div class="text-muted small">Filtra por No. empleado, nombre o departamento (solo verás a tu jerarquía).</div>
+    <div class="text-muted small">Busca un colaborador por nombre/apellido o No. empleado (solo verás a tu jerarquía).</div>
   </div>
-  <div style="min-width:280px;">
-    <input id="teamFilterInput" type="text" class="form-control form-control-sm" placeholder="Buscar en mi equipo...">
+  <div class="d-flex align-items-center gap-2" style="min-width:360px;">
+    <input id="teamSearchInput" type="text" class="form-control form-control-sm" placeholder="Ej. Gabriela / Hernández / 04886" autocomplete="off">
+    <button id="teamSearchBtn" type="button" class="btn btn-sm btn-outline-primary" style="white-space:nowrap;">Buscar</button>
   </div>
 </div>
 
-<% if (isRouteLeader) { %>
-  <div class="card mt-3 mb-3">
-    <div class="card-body">
-      <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
-        <div>
-          <div class="fw-bold">Herramientas de Ruta</div>
-          <div class="text-muted small">
-            Ruta asignada: <%= currentRouteName || currentBranchName || '—' %>
-          </div>
-        </div>
-        <div class="d-flex flex-wrap align-items-center gap-2">
-          <a class="btn btn-sm btn-outline-success" href="/dashboard/export/route?anio=<%= selectedYear %>&mes=<%= selectedMonth %>&mode=period">
-            Exportar equipo (Excel)
-          </a>
-          <form class="d-flex flex-wrap align-items-center gap-2" method="post" action="/dashboard/import/route" enctype="multipart/form-data">
-            <input type="hidden" name="anio" value="<%= selectedYear %>">
-            <input type="hidden" name="mes" value="<%= selectedMonth %>">
-            <input type="file" name="file" accept=".xlsx" class="form-control form-control-sm" style="max-width:260px;" required>
-            <button type="submit" class="btn btn-sm btn-primary">Importar</button>
-          </form>
-        </div>
-      </div>
-      <div class="text-muted small mt-2">
-        Tip: descarga el Excel, captura calificaciones y comentarios, y vuelve a importarlo para guardar masivamente.
-      </div>
-    </div>
-  </div>
-<% } %>
+<!-- Herramientas de Ruta removidas: la exportación e importación de rutas se trasladaron a la nueva página de administración -->
 <% if (!subordinateTree || subordinateTree.length === 0) { %>
   <p>No tienes colaboradores asignados.</p>
 <% } else { %>
@@ -530,18 +504,66 @@
     const _selectedMonth = Number("<%= (selectedMonth !== undefined && selectedMonth !== null) ? selectedMonth : '' %>") || (new Date().getMonth() + 1);
     const _includeBajas = "<%= _showBajas ? '1' : '0' %>";
 
-    // Filtro rápido de colaboradores (cliente)
-    const teamFilterInput = document.getElementById('teamFilterInput');
+    // Buscador de colaborador (cliente): NO filtra, solo localiza y hace scroll
+    const teamSearchInput = document.getElementById('teamSearchInput');
+    const teamSearchBtn = document.getElementById('teamSearchBtn');
     const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'').trim();
-    function applyTeamFilter(){
-      if (!teamFilterInput) return;
-      const q = norm(teamFilterInput.value);
-      document.querySelectorAll('[data-team-card]').forEach(card => {
-        const hay = norm((card.dataset.empNo||'') + ' ' + (card.dataset.empName||'') + ' ' + (card.dataset.empDept||''));
-        card.style.display = (!q || hay.includes(q)) ? '' : 'none';
-      });
+    function openAncestorCollapses(el){
+      // Abrir cualquier collapse padre (por sucursal) para que el colaborador sea visible
+      let cur = el;
+      while (cur) {
+        if (cur.classList && cur.classList.contains('collapse')) {
+          cur.classList.add('show');
+          cur.style.height = '';
+          // Intentar actualizar el botón del header si existe
+          const id = cur.getAttribute('id');
+          if (id) {
+            const btn = document.querySelector(`[data-bs-target="#${id}"]`);
+            if (btn) {
+              btn.setAttribute('aria-expanded','true');
+              if (btn.textContent && btn.textContent.includes('▸')) btn.textContent = '▾';
+            }
+          }
+        }
+        cur = cur.parentElement;
+      }
     }
-    if (teamFilterInput) teamFilterInput.addEventListener('input', applyTeamFilter);
+    function highlightCard(card){
+      card.classList.add('team-search-highlight');
+      setTimeout(() => card.classList.remove('team-search-highlight'), 2500);
+    }
+    function findAndFocus(){
+      if (!teamSearchInput) return;
+      const qRaw = teamSearchInput.value;
+      const q = norm(qRaw);
+      if (!q) return;
+
+      const cards = Array.from(document.querySelectorAll('[data-team-card]'));
+      const match = cards.find(card => {
+        const hay = norm((card.dataset.empNo||'') + ' ' + (card.dataset.empName||''));
+        return hay.includes(q);
+      });
+
+      if (!match) {
+        // Feedback simple sin romper layout
+        teamSearchInput.classList.add('is-invalid');
+        setTimeout(() => teamSearchInput.classList.remove('is-invalid'), 1200);
+        return;
+      }
+
+      // Asegurar que sea visible (abrir collapses padre)
+      openAncestorCollapses(match);
+      // Scroll y resalte
+      match.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      highlightCard(match);
+    }
+    if (teamSearchBtn) teamSearchBtn.addEventListener('click', findAndFocus);
+    if (teamSearchInput) teamSearchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        findAndFocus();
+      }
+    });
 
     async function loadNextLevel(empId) {
       const container = document.getElementById('subtree-' + empId);

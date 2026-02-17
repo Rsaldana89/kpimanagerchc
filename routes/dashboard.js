@@ -536,6 +536,18 @@ router.get('/', isAuth, async (req, res) => {
     const def = getDefaultPeriod();
     if (!selectedYear || isNaN(selectedYear)) selectedYear = def.year;
     if (!selectedMonth || isNaN(selectedMonth) || selectedMonth < 1 || selectedMonth > 12) selectedMonth = def.month;
+    // Persistir el periodo seleccionado en la sesión para reutilizarlo en otras
+    // secciones (por ejemplo, en la administración de rutas).  De este modo,
+    // al ingresar a la pantalla de rutas sin parámetros, se cargará el mismo
+    // periodo que el usuario tenía seleccionado en su dashboard.
+    try {
+      req.session.selectedYear = selectedYear;
+      req.session.selectedMonth = selectedMonth;
+    } catch (e) {
+      // Silenciar cualquier error al guardar en la sesión (por ejemplo si
+      // session store no está configurado).  No debería impactar al flujo.
+    }
+
     // Obtener los KPIs asignados a este usuario a través de su puesto
     const kpis = await getKPIsByPosition(user.puesto_id);
     // Obtener los resultados del usuario para cada KPI y mes del año seleccionado
@@ -2091,9 +2103,26 @@ router.get('/export/team', isAuth, async (req, res) => {
     // Incluir los KPIs del propio usuario al inicio del reporte del equipo
     const includeSelfParam = String(req.query.includeSelf || '1');
     const includeSelf = includeSelfParam === '1' || includeSelfParam.toLowerCase() === 'true';
-    const wb = await buildTeamWorkbook({ user, year, month, mode, includeBajas, includeSelf });
-    if (!wb) return res.status(404).send('No hay colaboradores para exportar');
-
+    let wb = await buildTeamWorkbook({ user, year, month, mode, includeBajas, includeSelf });
+    // Si no hay colaboradores directos o subordinados, realizar exportación de self como fallback
+    if (!wb) {
+      try {
+        const builtSelf = await buildEmployeeWorkbook({ employeeId: user.id, year, month, mode });
+        if (!builtSelf) return res.status(404).send('No hay colaboradores ni datos propios para exportar');
+        const selfWb = builtSelf.wb;
+        const filename = mode === 'annual'
+          ? `KPIs_${builtSelf.emp.incidencia_id || user.id}_Anual_${year}.xlsx`
+          : `KPIs_${builtSelf.emp.incidencia_id || user.id}_${year}-${String(month).padStart(2,'0')}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        await selfWb.xlsx.write(res);
+        res.end();
+        return;
+      } catch (ex) {
+        console.error('Error export team fallback self:', ex);
+        return res.status(500).send('No se pudo exportar');
+      }
+    }
     const filename = mode === 'annual'
       ? `KPIs_Equipo_${year}_Anual.xlsx`
       : `KPIs_Equipo_${year}-${String(month).padStart(2,'0')}.xlsx`;
@@ -2419,7 +2448,8 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
           if (Object.prototype.hasOwnProperty.call(changes, 'color')) { fields.push('color = ?'); vals.push(changes.color); }
           if (Object.prototype.hasOwnProperty.call(changes, 'comentario')) { fields.push('comentario = ?'); vals.push(changes.comentario); }
           if (fields.length === 0) { skipped++; continue; }
-          fields.push('updated_at = NOW()');
+          // Nota: la tabla kpi_resultados en este proyecto NO maneja columna updated_at.
+          // Evitamos referenciarla para no romper instalaciones existentes.
           await conn.execute(`UPDATE kpi_resultados SET ${fields.join(', ')} WHERE id = ?`, [...vals, idRes]);
           updated++;
         } else {

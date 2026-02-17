@@ -72,7 +72,8 @@ async function runEmailBatch({
   concurrency: concurrencyOverride = null,
   delayMs: delayMsOverride = null,
   jitterMs: jitterMsOverride = null,
-  onProgress = null
+  onProgress = null,
+  attachmentFormat = 'excel'
 }) {
   const targets = uniqNumericIds(employeeIds);
   const total = targets.length;
@@ -148,7 +149,7 @@ async function runEmailBatch({
       const empId = queue.shift();
       if (!empId) continue;
       try {
-        const r = await sendIndividualKpiResults({ employeeId: empId, year, month, force });
+        const r = await sendIndividualKpiResults({ employeeId: empId, year, month, force, format: attachmentFormat });
         if (r && r.skipped) skipped += 1;
         else sent += 1;
       } catch (e) {
@@ -227,7 +228,8 @@ async function startBatch({
   delayMs = null,
   concurrency = null,
   message = null,
-  background = true
+  background = true,
+  attachmentFormat = 'excel'
 }) {
   // Evitar envíos simultáneos (manual/scheduler)
   if (__isRunning) {
@@ -270,7 +272,8 @@ async function startBatch({
         force,
         pace,
         delayMs,
-        concurrency
+        concurrency,
+        attachmentFormat
       });
     } finally {
       __isRunning = false;

@@ -198,8 +198,45 @@ async function resolveImportDestino(departamentoOrigen, deptIdByNameUpper) {
       deptId = await ensureDepartamentoIdByNombreUpper('BAJA');
     }
   } else {
-    const matchId = deptIdByNameUpper.get(depUpper) || null;
+    // Buscar coincidencia exacta por nombre (después de normalizar)
+    let matchId = deptIdByNameUpper.get(depUpper) || null;
+    if (!matchId) {
+      // Para nombres que empiezan con "EYE" no siempre hay coincidencia exacta en el catálogo.
+      // Intentamos coincidencias parciales más flexibles:
+      if (depUpper.startsWith('EYE')) {
+        // 1) Buscar un departamento cuyo nombre normalizado incluya el nombre remoto completo
+        for (const [nameU, id] of deptIdByNameUpper.entries()) {
+          if (nameU.includes(depUpper)) {
+            matchId = id;
+            break;
+          }
+        }
+        // 2) Si no se encontró, buscar donde el nombre remoto incluya al nombre del catálogo
+        if (!matchId) {
+          for (const [nameU, id] of deptIdByNameUpper.entries()) {
+            if (depUpper.includes(nameU)) {
+              matchId = id;
+              break;
+            }
+          }
+        }
+        // 3) Como último recurso, seleccionar cualquier departamento cuyo nombre contenga "EYE"
+        if (!matchId) {
+          for (const [nameU, id] of deptIdByNameUpper.entries()) {
+            if (nameU.includes('EYE')) {
+              matchId = id;
+              break;
+            }
+          }
+        }
+        if (matchId) {
+          deptName = departamentoOrigen;
+          deptId = matchId;
+        }
+      }
+    }
     if (matchId) {
+      // Si se encontró coincidencia exacta o parcial, usarla
       deptName = departamentoOrigen;
       deptId = matchId;
     } else {

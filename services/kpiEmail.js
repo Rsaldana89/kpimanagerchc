@@ -140,7 +140,7 @@ async function hasSentEmail(employeeId, year, month) {
  * @param {number} param0.month Mes del periodo a enviar (1-12).
  * @param {boolean} [param0.force=false] Forzar el reenvío incluso si ya se envió.
  */
-async function sendIndividualKpiResults({ employeeId, year, month, force = false }) {
+async function sendIndividualKpiResults({ employeeId, year, month, force = false, format = 'excel' }) {
   // Obtener info y correo
   const emp = await fetchEmployeeEmailInfo(employeeId);
   if (!emp || !emp.correo) {
@@ -160,8 +160,87 @@ async function sendIndividualKpiResults({ employeeId, year, month, force = false
   if (!built) {
     throw new Error('No se pudieron generar los KPIs del empleado');
   }
-  const fileName = `KPIs_${emp.incidencia_id || employeeId}_${year}-${String(month).padStart(2, '0')}.xlsx`;
+  // Definir nombre base sin extensión
+  const baseName = `KPIs_${emp.incidencia_id || employeeId}_${year}-${String(month).padStart(2, '0')}`;
+  let attachmentFilename;
+  let attachmentContent;
+  let attachmentType;
+
+  // Siempre generamos el archivo Excel en memoria
   const buffer = await built.wb.xlsx.writeBuffer();
+  if (String(format || '').toLowerCase() === 'pdf') {
+    // Convertir Excel a PDF utilizando LibreOffice/soffice.  En algunos entornos (p.ej. Windows)
+    // el ejecutable se llama "soffice" o se encuentra en un directorio específico.  Si la
+    // conversión falla intentamos múltiples comandos y, en último caso, hacemos
+    // fallback a enviar el archivo Excel directamente.
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { exec } = require('child_process');
+    // Crear directorio temporal
+    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kpi-'));
+    const xlsxPath = path.join(tmpDir, baseName + '.xlsx');
+    const pdfPath = path.join(tmpDir, baseName + '.pdf');
+    // Guardar Excel temporalmente
+    await fs.promises.writeFile(xlsxPath, Buffer.from(buffer));
+    // Lista de comandos a probar dependiendo del sistema operativo
+    const libreCmds = [];
+    if (process.platform === 'win32') {
+      // En Windows, LibreOffice suele instalar un ejecutable "soffice.exe".  Intentar distintas rutas.
+      libreCmds.push('soffice');
+      libreCmds.push('"C:\\Program Files\\LibreOffice\\program\\soffice.exe"');
+      libreCmds.push('"C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe"');
+    } else {
+      // En Linux/Mac suele llamarse "libreoffice" o "soffice"
+      libreCmds.push('libreoffice');
+      libreCmds.push('soffice');
+    }
+    let converted = false;
+    for (const cmd of libreCmds) {
+      try {
+        // Nota: se usa --headless para ejecución sin UI y --convert-to pdf
+        await new Promise((resolve, reject) => {
+          exec(`${cmd} --headless --convert-to pdf --outdir "${tmpDir}" "${xlsxPath}"`, (error) => {
+            if (error) return reject(error);
+            resolve();
+          });
+        });
+        converted = true;
+        break;
+      } catch (convErr) {
+        // Continúa con el siguiente comando
+      }
+    }
+    let pdfBuffer;
+    if (converted) {
+      try {
+        pdfBuffer = await fs.promises.readFile(pdfPath);
+      } catch (readErr) {
+        converted = false;
+      }
+    }
+    // Limpiar archivos temporales
+    try {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    } catch (e) {
+      // Ignorar errores de limpieza
+    }
+    if (converted && pdfBuffer) {
+      attachmentFilename = baseName + '.pdf';
+      attachmentContent = pdfBuffer;
+      attachmentType = 'application/pdf';
+    } else {
+      // No se pudo convertir: fallback a Excel adjunto
+      attachmentFilename = baseName + '.xlsx';
+      attachmentContent = buffer;
+      attachmentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    }
+  } else {
+    // Por defecto, adjuntar Excel
+    attachmentFilename = baseName + '.xlsx';
+    attachmentContent = buffer;
+    attachmentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
   // Construir contenido del correo
   const subject = `Resultados de KPIs - ${built.emp.nombre} - ${month}/${year}`;
   const html = `<p>Estimado(a) ${built.emp.nombre},</p>
@@ -177,9 +256,9 @@ async function sendIndividualKpiResults({ employeeId, year, month, force = false
     html,
     attachments: [
       {
-        filename: fileName,
-        content: buffer,
-        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        filename: attachmentFilename,
+        content: attachmentContent,
+        contentType: attachmentType
       }
     ]
   });
