@@ -1986,7 +1986,7 @@ router.get('/export/route', isAuth, async (req, res) => {
 
     // Obtener empleados de la ruta (sucursal virtual + sucursales reales mapeadas a la ruta)
     const whereBajas = includeBajas ? '' : "AND (d.nombre IS NULL OR d.nombre <> 'BAJA')";
-    const [emps] = await pool.execute(
+    let [emps] = await pool.execute(
       `SELECT e.id, e.incidencia_id, e.nombre,
               e.puesto_id,
               p.nombre AS puesto_nombre,
@@ -2002,8 +2002,13 @@ router.get('/export/route', isAuth, async (req, res) => {
        ${whereBajas}`,
       [rutaId]
     );
-
-    // Asegurar que el usuario esté incluido (por si faltara por datos inconsistentes)
+    // Filtrar supervisores de sucursal (puesto 46) y auxiliares de supervisión (puesto 45)
+    emps = (emps || []).filter(e => {
+      const pid = Number(e.puesto_id);
+      return pid !== 45 && pid !== 46;
+    });
+    // Asegurar que el usuario esté incluido (por si faltara por datos inconsistentes).  Sin embargo,
+    // también se excluye si su puesto es uno de los filtrados.
     const hasSelf = emps.some(e => e.id === user.id);
     if (!hasSelf) {
       const [selfRows] = await pool.execute(
@@ -2020,7 +2025,13 @@ router.get('/export/route', isAuth, async (req, res) => {
          LIMIT 1`,
         [user.id]
       );
-      if (selfRows.length) emps.unshift(selfRows[0]);
+      if (selfRows.length) {
+        const selfEmp = selfRows[0];
+        const pid = Number(selfEmp.puesto_id);
+        if (pid !== 45 && pid !== 46) {
+          emps.unshift(selfEmp);
+        }
+      }
     }
 
     // Orden profesional: 1) Yo 2) Auxiliares de supervisión (sucursal virtual) 3) Sucursal por sucursal
@@ -2321,7 +2332,8 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
          LEFT JOIN sucursales s ON s.id = e.sucursal_id
          LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
          LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-         WHERE e.incidencia_id IN (${empNoPlace})`,
+         WHERE e.incidencia_id IN (${empNoPlace})
+           AND e.puesto_id NOT IN (45, 46)`,
         empNos
       );
       empRows = eRows;

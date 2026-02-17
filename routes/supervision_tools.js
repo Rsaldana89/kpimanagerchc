@@ -279,6 +279,7 @@ router.get('/admin/supervision/export', isAuth, requireRole(['admin']), async (r
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE COALESCE(sv.id, sr.ruta_id) IS NOT NULL
+         AND e.puesto_id NOT IN (45, 46)
        ${whereBajas}
        ORDER BY COALESCE(sv.id, sr.ruta_id), s.nombre, e.incidencia_id`
     );
@@ -350,6 +351,7 @@ router.get('/admin/supervision/export/:rutaId', isAuth, requireRole(['admin']), 
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE COALESCE(sv.id, sr.ruta_id) = ?
+         AND e.puesto_id NOT IN (45, 46)
        ${whereBajas}
        ORDER BY s.nombre, e.incidencia_id`,
       [rutaId]
@@ -473,7 +475,8 @@ router.post('/admin/supervision/import', isAuth, requireRole(['admin']), upload.
       const [eRows] = await pool.execute(
         `SELECT e.id, e.incidencia_id, e.nombre, e.puesto_id
          FROM empleados e
-         WHERE e.incidencia_id IN (${empNoPlace})`,
+         WHERE e.incidencia_id IN (${empNoPlace})
+           AND e.puesto_id NOT IN (45, 46)`,
         empNos
       );
       empRows = eRows;
