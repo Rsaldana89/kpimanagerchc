@@ -12,6 +12,9 @@
   <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-2">
     <div>
       <div class="fw-semibold">Administración de empleados</div>
+      <% if (typeof lastSync !== 'undefined' && lastSync) { %>
+        <div class="text-muted small">Última sincronización: <%= lastSync %></div>
+      <% } %>
       <div class="text-muted small">Tip: pulsa <strong>Editar</strong> en una fila, modifica y luego <strong>Guardar</strong>.</div>
     </div>
   </div>

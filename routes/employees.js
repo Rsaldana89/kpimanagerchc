@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { pool, incidenciasPool } = require('../db');
+// Funciones para actualizar y consultar la fecha de última sincronización de empleados.
+const { updateLastSyncTime, getLastSyncTime } = require('../services/employeeSyncScheduler');
 // Logger helper
 const { logAction } = require('../services/logger');
 const isAuth = require('../middleware/isAuth');
@@ -362,6 +364,14 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
     // Codificar la cadena de búsqueda para los enlaces de paginación
     const searchEncoded = search ? encodeURIComponent(search) : '';
     const userRole = (req.session.user && req.session.user.role) || '';
+    // Leer la fecha/hora de la última sincronización (si existe) para mostrarla en la vista
+    let lastSync = null;
+    try {
+      lastSync = await getLastSyncTime();
+    } catch (e) {
+      // Silenciar errores al leer archivo de sincronización
+      lastSync = null;
+    }
     res.render('personal', {
       title: 'Personal',
       empleados: rows,
@@ -377,7 +387,8 @@ router.get('/', isAuth, requireRole(['admin','manager']), async (req, res) => {
       showBajas,
       deptFilter,
       userRole,
-      isAdmin: userRole === 'admin'
+      isAdmin: userRole === 'admin',
+      lastSync
     });
   } catch (err) {
     console.error('Error al listar empleados:', err);
@@ -877,6 +888,12 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
         );
         puestosActualizados++;
       }
+    }
+    // Registrar la fecha/hora de esta actualización manual para mostrar en la pantalla
+    try {
+      await updateLastSyncTime();
+    } catch (e) {
+      console.error('Error al actualizar registro de última sincronización (manual):', e);
     }
     req.flash('success', `Correos actualizados: ${correosActualizados}. Puestos/dep actualizados: ${puestosActualizados}. Sucursales actualizadas: ${sucursalesActualizadas}.`);
     return res.redirect('/personal');

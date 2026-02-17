@@ -68,6 +68,11 @@ const supervisionToolsRoutes = require('./routes/supervision_tools');
 // haber inicializado las variables de entorno y antes de iniciar el
 // servidor para que el cron se configure correctamente.
 const { scheduleMonthlyEmails } = require('./services/emailScheduler');
+// Cargar el programador de sincronización de empleados.  Este módulo
+// ejecutará una tarea diaria (por defecto a las 03:00) para
+// sincronizar puestos y correos desde incidencias.  Se carga aquí
+// para que se configure apenas arranque el servidor.
+const { scheduleEmployeeSync } = require('./services/employeeSyncScheduler');
 
 // Registro de rutas
 app.use('/', authRoutes);
@@ -105,5 +110,12 @@ app.listen(PORT, () => {
     console.log('Programador de correos iniciado');
   } catch (e) {
     console.error('No se pudo iniciar el programador de correos:', e);
+  }
+  // Iniciar tarea programada de sincronización de empleados
+  try {
+    scheduleEmployeeSync();
+    console.log('Programador de sincronización de empleados iniciado');
+  } catch (e) {
+    console.error('No se pudo iniciar el programador de sincronización de empleados:', e);
   }
 });
