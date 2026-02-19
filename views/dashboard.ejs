@@ -565,6 +565,33 @@
       }
     });
 
+    /*
+     * Filtro de equipo
+     *
+     * En versiones anteriores se definía una función global `applyTeamFilter()`
+     * que se encargaba de aplicar filtros visuales a las tarjetas del equipo
+     * (por ejemplo, ocultar colaboradores que no coincidían con una búsqueda o
+     * resaltar ciertos registros).  Durante una refactorización reciente se
+     * eliminó accidentalmente su definición, pero la llamada siguió presente
+     * después de cargar un nuevo nivel de colaboradores mediante AJAX.
+     *
+     * Cuando `applyTeamFilter` no está definida, llamar a ella provoca un
+     * `ReferenceError` en tiempo de ejecución.  Ese error se intercepta en
+     * la función `loadNextLevel()` y se traduce en un mensaje genérico de
+     * "Error de red al cargar el nivel", lo que confunde al usuario porque
+     * no hay un problema real de conexión.  Para evitar este fallo y
+     * restaurar el comportamiento esperado, definimos a continuación
+     * `applyTeamFilter` como una función de no‑operación (no-op).  Si en el
+     * futuro se reintroducen filtros específicos, su lógica puede añadirse
+     * aquí sin romper la carga por niveles.
+     */
+    function applyTeamFilter() {
+      // No hacer nada por defecto.  Esta función sirve como hook para
+      // aplicar filtros visuales opcionales una vez que se hayan cargado
+      // dinámicamente nuevos niveles del equipo.  Si no se necesita
+      // filtrar o destacar colaboradores adicionales, se deja vacío.
+    }
+
     async function loadNextLevel(empId) {
       const container = document.getElementById('subtree-' + empId);
       const btn = document.querySelector(`[data-subtree-btn][data-emp-id="${empId}"]`);

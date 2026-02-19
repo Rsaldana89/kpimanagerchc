@@ -274,7 +274,16 @@ function buildSubordinatePuestoIds(puestoId, puestoMap, visited = new Set()) {
  * más rápido y desplegar niveles bajo demanda (un nivel por click).
  */
 async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, year, month, showBajas = false, routeFilterId = null) {
-  const directPuestos = puestoMap.filter(p => p.responde_a_id === puestoId).map(p => p.id);
+  // Para evitar errores de comparación estricta (ej. '46' vs 46),
+  // normalizamos los identificadores de puestos antes de comparar.  Si
+  // responde_a_id es null o undefined, no lo consideramos.
+  const pid = Number(puestoId);
+  const directPuestos = puestoMap
+    .filter(p => {
+      const respondsTo = (p.responde_a_id !== null && p.responde_a_id !== undefined) ? Number(p.responde_a_id) : null;
+      return respondsTo === pid;
+    })
+    .map(p => Number(p.id));
   if (directPuestos.length === 0) return [];
 
   const nodes = [];
