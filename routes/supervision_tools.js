@@ -14,13 +14,26 @@ const { scoreKpi } = require('../services/kpiScoring');
 // -----------------------------------------------------------------------------
 
 // Devuelve el año y mes predeterminados (periodo anterior al mes actual)
+/**
+ * Calcula el periodo por defecto para la pantalla de rutas.  Durante los
+ * primeros 25 días del mes se muestra el mes anterior; a partir del
+ * día 26 se cambia al mes actual.  Esto mantiene sincronizado el
+ * periodo con el usado en el dashboard de KPIs.  Devuelve el
+ * año y el mes (1-12).
+ *
+ * @returns {{year:number, month:number}} Objeto con el periodo por defecto.
+ */
 function getDefaultPeriod() {
   const now = new Date();
   let year = now.getFullYear();
-  let month = now.getMonth(); // 0..11, donde 0 = Enero
-  if (month === 0) {
-    month = 12;
-    year -= 1;
+  let month = now.getMonth() + 1; // 1..12
+  // Hasta el día 25 inclusive se utiliza el mes anterior
+  if (now.getDate() <= 25) {
+    month -= 1;
+    if (month < 1) {
+      month = 12;
+      year -= 1;
+    }
   }
   return { year, month };
 }
@@ -568,18 +581,25 @@ router.post('/admin/supervision/import', isAuth, requireRole(['admin']), upload.
           [emp.id, kpi.id, selectedYear, selectedMonth]
         );
         if (existsRows.length) {
+          // Actualizar registro existente: valor, color, comentario y marcarlo como calificado y aprobado
           const idRes = existsRows[0].id;
           const fields = [];
           const vals = [];
           if (Object.prototype.hasOwnProperty.call(changes, 'valor')) { fields.push('valor = ?'); vals.push(changes.valor); }
           if (Object.prototype.hasOwnProperty.call(changes, 'color')) { fields.push('color = ?'); vals.push(changes.color); }
           if (Object.prototype.hasOwnProperty.call(changes, 'comentario')) { fields.push('comentario = ?'); vals.push(changes.comentario); }
-          if (fields.length === 0) { skipped++; continue; }
-          // Nota: la tabla kpi_resultados en este proyecto NO maneja columna updated_at.
-          // Evitamos referenciarla para no romper instalaciones existentes.
+          // Marcar como aprobado
+          fields.push('visto_bueno = 1');
+          fields.push('visto_por = ?'); vals.push(user.id);
+          // Registrar fecha de aprobación si la columna existe.  También limpiar revisión.
+          fields.push('visto_fecha = NOW()');
+          fields.push('revision_por = NULL');
+          fields.push('revision_fecha = NULL');
+          fields.push('revision_motivo = NULL');
           await conn.execute(`UPDATE kpi_resultados SET ${fields.join(', ')} WHERE id = ?`, [...vals, idRes]);
           updated++;
         } else {
+          // Insertar nuevo registro con valor y color y marcarlo como calificado y aprobado
           const insertVals = {
             empleado_id: emp.id,
             kpi_id: kpi.id,
@@ -590,9 +610,9 @@ router.post('/admin/supervision/import', isAuth, requireRole(['admin']), upload.
             comentario: Object.prototype.hasOwnProperty.call(changes, 'comentario') ? changes.comentario : null
           };
           await conn.execute(
-            `INSERT INTO kpi_resultados (empleado_id, kpi_id, anio, mes, valor, color, comentario, visto_bueno, visto_por)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
-            [insertVals.empleado_id, insertVals.kpi_id, insertVals.anio, insertVals.mes, insertVals.valor, insertVals.color, insertVals.comentario]
+            `INSERT INTO kpi_resultados (empleado_id, kpi_id, anio, mes, valor, color, comentario, visto_bueno, visto_por, visto_fecha, revision_por, revision_fecha, revision_motivo)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), NULL, NULL, NULL)`,
+            [insertVals.empleado_id, insertVals.kpi_id, insertVals.anio, insertVals.mes, insertVals.valor, insertVals.color, insertVals.comentario, user.id]
           );
           inserted++;
         }

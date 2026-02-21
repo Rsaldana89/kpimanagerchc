@@ -141,6 +141,37 @@ document.addEventListener('DOMContentLoaded', function() {
   monthSelect.addEventListener('change', updateExportImport);
   updateExportImport();
 
+  // Advertencia al importar en periodos cerrados: hasta el día 25 del mes se considera
+  // abierto el periodo anterior.  Si se intenta importar un periodo anterior al
+  // periodo por defecto cuando ya cambió el mes (día > 25), mostrar confirmación.
+  const importForm = document.getElementById('import-form');
+  importForm.addEventListener('submit', function(e) {
+    try {
+      const y = parseInt(importYear.value, 10);
+      const m = parseInt(importMonth.value, 10);
+      const now = new Date();
+      let defYear = now.getFullYear();
+      let defMonth = now.getMonth() + 1; // 1-12
+      if (now.getDate() <= 25) {
+        defMonth -= 1;
+        if (defMonth < 1) {
+          defMonth = 12;
+          defYear -= 1;
+        }
+      }
+      const isOlder = (y < defYear) || (y === defYear && m < defMonth);
+      if (isOlder) {
+        const monthNames = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+        const msg = `El periodo ${monthNames[m-1]} ${y} ya está cerrado desde el 26 del mes siguiente. ¿Realmente desea sobreescribir los valores?`;
+        if (!window.confirm(msg)) {
+          e.preventDefault();
+        }
+      }
+    } catch (err) {
+      // En caso de error, no bloquear
+    }
+  });
+
   // --- Gestión de rutas ---
   const routeSelect = document.getElementById('supervision-route-select');
   const branchSelect = document.getElementById('supervision-branch-select');

@@ -28,10 +28,26 @@ const upload = multer({
  *     defecto usa new Date().
  * @returns {{year:number, month:number}} Objeto con año y mes (1-12).
  */
+/**
+ * Calcula el periodo por defecto basado en la fecha actual.  Si el día
+ * del mes es menor o igual a 25, se considera que el periodo por
+ * defecto corresponde al mes anterior; de lo contrario se toma el
+ * mes actual.  Este comportamiento permite que, durante los
+ * primeros 25 días del mes, se sigan mostrando y editando los
+ * resultados del mes pasado.  El cálculo usa la fecha del
+ * servidor (por ejemplo, la configuración de la PC donde corre
+ * Node.js), de modo que cambiar el reloj del equipo afecta el
+ * periodo que se selecciona.
+ *
+ * @param {Date} [now] Objeto Date opcional para pruebas; por
+ *     defecto usa new Date().
+ * @returns {{year:number, month:number}} Objeto con año y mes (1-12).
+ */
 function getDefaultPeriod(now = new Date()) {
   let year = now.getFullYear();
   let month = now.getMonth() + 1; // 1-12
-  if (now.getDate() <= 10) {
+  // Hasta el día 25 inclusive se utiliza el mes anterior
+  if (now.getDate() <= 25) {
     month -= 1;
     if (month < 1) {
       month = 12;
@@ -831,6 +847,34 @@ router.post('/save', isAuth, async (req, res) => {
   try {
     const hasValue = !(valor === undefined || valor === null || String(valor).trim() === '');
 
+    // Candado por cierre de periodo: si el usuario intenta guardar un resultado
+    // en un periodo que ya fue cerrado (mes anterior cuando ha pasado el día 25),
+    // se bloquea a menos que el usuario sea administrador.  El periodo
+    // considerado cerrado es cualquier periodo anterior al periodo por defecto
+    // calculado según la fecha actual (getDefaultPeriod).  Los administradores
+    // pueden editar periodos cerrados.
+    try {
+      const def = getDefaultPeriod();
+      const pYear = parseInt(anio, 10);
+      const pMonth = parseInt(mes, 10);
+      const periodIsOlder = (
+        (pYear < def.year) ||
+        (pYear === def.year && pMonth < def.month)
+      );
+      // Solo permitir a admin editar periodos cerrados
+      const userRoleNow = (user && user.role) || '';
+      if (periodIsOlder && userRoleNow !== 'admin') {
+        const msgClosed = 'El periodo ya fue cerrado y no se pueden modificar las calificaciones.';
+        if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
+          return res.status(423).json({ ok: false, closed: true, error: msgClosed });
+        }
+        req.flash('error', msgClosed);
+        return res.redirect(`/dashboard?anio=${anio}&mes=${mes}`);
+      }
+    } catch (cerrErr) {
+      // Si getDefaultPeriod no está disponible o falla, ignorar y continuar
+    }
+
     // Obtener definición del KPI para calcular color automáticamente (modelo nuevo)
     const [kpiRows] = await pool.execute(
       `SELECT id, unidad, score_type, direction, threshold_yellow, threshold_green,
@@ -1120,7 +1164,29 @@ router.post('/visto', isAuth, async (req, res) => {
       req.flash('error', msg);
       return res.redirect(`/dashboard?anio=${anio}&mes=${mes}`);
     }
-    // Asegura que exista el registro para poder “cerrar” aunque aún no haya valor capturado.
+    // Validar que el KPI tenga una calificación antes de aprobarlo.
+    try {
+      const [resRows] = await pool.execute(
+        `SELECT valor
+         FROM kpi_resultados
+         WHERE empleado_id = ? AND kpi_id = ? AND anio = ? AND mes = ?
+         LIMIT 1`,
+        [targetEmployeeId, kpi_id, anio, mes]
+      );
+      const hasValor = resRows.length > 0 && resRows[0].valor !== null && resRows[0].valor !== undefined && String(resRows[0].valor).trim() !== '';
+      if (!hasValor) {
+        const msgNoValor = 'Primero debe ingresar la calificación (valor) y guardar antes de aprobar.';
+        if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
+          return res.status(400).json({ ok: false, empty: true, error: msgNoValor });
+        }
+        req.flash('error', msgNoValor);
+        return res.redirect(`/dashboard?anio=${anio}&mes=${mes}`);
+      }
+    } catch (eCheck) {
+      // Si hay error al verificar el valor, no bloquear la aprobación
+    }
+
+    // Asegura que exista el registro para poder “cerrar” aunque ya exista resultado.
     await pool.execute(
       `INSERT INTO kpi_resultados (empleado_id, kpi_id, anio, mes, visto_bueno, visto_por, visto_fecha,
                                   revision_por, revision_fecha, revision_motivo)
@@ -2462,18 +2528,24 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
           [emp.id, kpi.id, selectedYear, selectedMonth]
         );
         if (existsRows.length) {
+          // Actualizar registro existente: valor, color, comentario y marcarlo como calificado y aprobado
           const idRes = existsRows[0].id;
           const fields = [];
           const vals = [];
           if (Object.prototype.hasOwnProperty.call(changes, 'valor')) { fields.push('valor = ?'); vals.push(changes.valor); }
           if (Object.prototype.hasOwnProperty.call(changes, 'color')) { fields.push('color = ?'); vals.push(changes.color); }
           if (Object.prototype.hasOwnProperty.call(changes, 'comentario')) { fields.push('comentario = ?'); vals.push(changes.comentario); }
-          if (fields.length === 0) { skipped++; continue; }
-          // Nota: la tabla kpi_resultados en este proyecto NO maneja columna updated_at.
-          // Evitamos referenciarla para no romper instalaciones existentes.
+          // Marcar como aprobado
+          fields.push('visto_bueno = 1');
+          fields.push('visto_por = ?'); vals.push(user.id);
+          fields.push('visto_fecha = NOW()');
+          fields.push('revision_por = NULL');
+          fields.push('revision_fecha = NULL');
+          fields.push('revision_motivo = NULL');
           await conn.execute(`UPDATE kpi_resultados SET ${fields.join(', ')} WHERE id = ?`, [...vals, idRes]);
           updated++;
         } else {
+          // Insertar nuevo registro con valor y color y marcarlo como calificado y aprobado
           const insertVals = {
             empleado_id: emp.id,
             kpi_id: kpi.id,
@@ -2483,11 +2555,10 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
             color: Object.prototype.hasOwnProperty.call(changes, 'color') ? changes.color : null,
             comentario: Object.prototype.hasOwnProperty.call(changes, 'comentario') ? changes.comentario : null
           };
-          // Inserta únicamente las columnas existentes: valor, color y comentario
           await conn.execute(
-            `INSERT INTO kpi_resultados (empleado_id, kpi_id, anio, mes, valor, color, comentario, visto_bueno, visto_por)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)`,
-            [insertVals.empleado_id, insertVals.kpi_id, insertVals.anio, insertVals.mes, insertVals.valor, insertVals.color, insertVals.comentario]
+            `INSERT INTO kpi_resultados (empleado_id, kpi_id, anio, mes, valor, color, comentario, visto_bueno, visto_por, visto_fecha, revision_por, revision_fecha, revision_motivo)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NOW(), NULL, NULL, NULL)`,
+            [insertVals.empleado_id, insertVals.kpi_id, insertVals.anio, insertVals.mes, insertVals.valor, insertVals.color, insertVals.comentario, user.id]
           );
           inserted++;
         }

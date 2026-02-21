@@ -38,7 +38,11 @@
         const now = new Date();
         let y = now.getFullYear();
         let m = now.getMonth() + 1;
-        if (now.getDate() <= 10) {
+        // Hasta el día 25 inclusive se utiliza el mes anterior.  Esto mantiene
+        // el mismo comportamiento que en el servidor (ver getDefaultPeriod en
+        // routes/dashboard.js).  Anteriormente se usaba <= 10 pero el negocio
+        // cambió a 25 para que el mes anterior permanezca abierto más tiempo.
+        if (now.getDate() <= 25) {
           m -= 1;
           if (m < 1) { m = 12; y -= 1; }
         }
