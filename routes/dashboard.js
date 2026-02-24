@@ -7,7 +7,14 @@ const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { scoreKpi } = require('../services/kpiScoring');
 // Helpers for virtual supervisory branches: determine effective puesto and mirror results
-const { getKPIsForEmployee, getEffectivePositionId, mirrorVirtualSucursalKpi } = require('../services/kpiVirtual');
+// Import helpers for virtual supervisory branches.  In addition to the
+// existing helpers, also import VIRTUAL_BRANCH_REGEX so that we can
+// determine effective puestos in the team export without performing
+// asynchronous DB lookups for each employee.  This regex matches
+// branch names like "SUPERVISION 1" through "SUPERVISION 6" (case
+// insensitive) and is used to detect virtual branches.  See
+// services/kpiVirtual.js for details.
+const { getKPIsForEmployee, getEffectivePositionId, mirrorVirtualSucursalKpi, VIRTUAL_BRANCH_REGEX } = require('../services/kpiVirtual');
 const multer = require('multer');
 // Importación de Excel (calificaciones masivas) - usamos memoria para evitar archivos temporales
 const upload = multer({
@@ -1683,11 +1690,15 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
               e.puesto_id,
               p.nombre AS puesto_nombre,
               d.nombre AS departamento_nombre,
-              s.nombre AS sucursal_nombre
+              e.sucursal_id,
+              s.nombre AS sucursal_nombre,
+              COALESCE(sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+       LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.puesto_id IN (${pPlace})
        ${whereBajas}
        ORDER BY e.nombre`,
@@ -1703,11 +1714,15 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
               e.puesto_id,
               p.nombre AS puesto_nombre,
               d.nombre AS departamento_nombre,
-              s.nombre AS sucursal_nombre
+              e.sucursal_id,
+              s.nombre AS sucursal_nombre,
+              COALESCE(sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+       LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
        LIMIT 1`,
       [user.id]
@@ -1722,11 +1737,85 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
   }
   if (!empsFinal.length) return null;
 
+  // ----------------------------------------------------------------------
+  // Filtrar empleados cuando el usuario es líder de una ruta de supervisión
+  // basada en una sucursal virtual SUPERVISION 1..6.
+  //
+  // Regla:
+  // - Si el usuario es supervisor de sucursal (puesto 46) o auxiliar de
+  //   supervisión (puesto 45) y su sucursal es una SUPERVISION 1..6,
+  //   entonces la exportación debe incluir:
+  //     a) La sucursal virtual del usuario
+  //     b) Todas las sucursales reales mapeadas a ESA MISMA ruta
+  //   y debe excluir sucursales virtuales de otras rutas (SUPERVISION 1,3,4,5,6).
+  let routeIdFilter = null;
+  try {
+    const pid = user ? Number(user.puesto_id) : null;
+    if (user && (pid === 46 || pid === 45)) {
+      const [uRows] = await pool.execute(
+        `SELECT e.puesto_id,
+                s.nombre AS sucursal_nombre,
+                COALESCE(sv.id, sr.ruta_id) AS ruta_id
+         FROM empleados e
+         LEFT JOIN sucursales s ON s.id = e.sucursal_id
+         LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+         LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
+         WHERE e.id = ?
+         LIMIT 1`,
+        [user.id]
+      );
+      if (uRows && uRows.length) {
+        const branchName = String(uRows[0].sucursal_nombre || '').trim();
+        const isVirtual = branchName && VIRTUAL_BRANCH_REGEX.test(branchName);
+        const rid = uRows[0].ruta_id ? Number(uRows[0].ruta_id) : null;
+        if (isVirtual && rid) {
+          routeIdFilter = rid;
+        }
+      }
+    }
+  } catch (ex) {
+    console.error('Error determining route filter for team export', ex);
+  }
+
+  if (routeIdFilter !== null) {
+    empsFinal = empsFinal.filter(emp => {
+      if (emp.id === user.id) return true;
+      // Mantener empleados de la misma ruta_id
+      return Number(emp.ruta_id) === routeIdFilter;
+    });
+    if (includeSelf) {
+      empsFinal = empsFinal.sort((a, b) => {
+        if (a.id === user.id && b.id !== user.id) return -1;
+        if (b.id === user.id && a.id !== user.id) return 1;
+        return 0;
+      });
+    }
+    if (!empsFinal.length) return null;
+  }
+
   const empIds = empsFinal.map(e => e.id);
   const empPlace = empIds.map(() => '?').join(',');
 
-  // KPIs por puesto
-  const puestoIds = [...new Set(empsFinal.map(e => e.puesto_id))];
+  // --------------------------------------------------------------
+  // Calcular el puesto efectivo para cada empleado.  Para los
+  // empleados en sucursales virtuales SUPERVISION 1..6 cuyo puesto
+  // no es 46, se utiliza 46 (Supervisor de Sucursal).  Esto permite
+  // que los empleados espejo exporten los KPIs heredados del
+  // supervisor en lugar de los asignados a su puesto real.
+  const effectivePuestoByEmp = new Map();
+  empsFinal.forEach(emp => {
+    const branchName = (emp.sucursal_nombre || '').trim();
+    let eff = emp.puesto_id;
+    // Si la sucursal coincide con el patrón virtual y el puesto no es 46,
+    // asignar puesto efectivo 46.
+    if (branchName && VIRTUAL_BRANCH_REGEX.test(branchName) && Number(emp.puesto_id) !== 46) {
+      eff = 46;
+    }
+    effectivePuestoByEmp.set(emp.id, eff);
+  });
+
+  // Conjunto único de puestos efectivos para los empleados seleccionados
+  const puestoIds = [...new Set(Array.from(effectivePuestoByEmp.values()))];
   const puestoPlace = puestoIds.map(() => '?').join(',');
   const [pkRows] = await pool.execute(
     `SELECT pk.puesto_id, k.*
@@ -1830,7 +1919,10 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
   const monthList = (mode === 'annual') ? Array.from({ length: 12 }, (_, i) => i + 1) : [month];
 
   empsFinal.forEach(emp => {
-    const kpis = kpisByPuesto.get(emp.puesto_id) || [];
+    // Obtener el puesto efectivo para el empleado actual.  Si no existe
+    // una entrada (caso improbable), usar su puesto real.
+    const effPuesto = effectivePuestoByEmp.get(emp.id) || emp.puesto_id;
+    const kpis = kpisByPuesto.get(effPuesto) || [];
     monthList.forEach(m => {
       kpis.forEach(kpi => {
         const r = resMap.get(`${emp.id}|${kpi.id}|${m}`) || {};
