@@ -491,7 +491,11 @@
      individuales, cada una con los colaboradores dentro.  Si se requieren niveles
      adicionales, éstos seguirán cargándose por AJAX desde /dashboard/subtree/.
   */ %>
-  <%- include('partials/sub_kpi_level', { nodes: subordinateTree, selectedMonth: selectedMonth, selectedYear: selectedYear, groupBySucursal: useBranchGrouping }) %>
+  <!-- Contenedor raíz del equipo. Lo envolvemos como un subtree para poder recargarlo vía AJAX
+       cuando se despliegan sucursales virtuales (SUPERVISION 1..6) sin recargar toda la página. -->
+  <div id="subtree-<%= currentEmployeeId %>" data-subtree-container data-loaded="1" style="display:block;">
+    <%- include('partials/sub_kpi_level', { nodes: subordinateTree, selectedMonth: selectedMonth, selectedYear: selectedYear, groupBySucursal: useBranchGrouping, parentEmpleadoId: currentEmployeeId }) %>
+  </div>
 <% } %>
 
 <!--
@@ -596,17 +600,33 @@
       // filtrar o destacar colaboradores adicionales, se deja vacío.
     }
 
-    async function loadNextLevel(empId) {
+    async function loadNextLevel(empId, force = false) {
       const container = document.getElementById('subtree-' + empId);
       const btn = document.querySelector(`[data-subtree-btn][data-emp-id="${empId}"]`);
       if (!container) return;
 
       // Si ya está cargado, solo alterna visibilidad
-      if (container.dataset.loaded === '1') {
+      if (container.dataset.loaded === '1' && !force) {
         const willShow = (container.style.display === 'none' || container.style.display === '');
-        container.style.display = willShow ? 'block' : 'none';
-        if (btn) btn.textContent = willShow ? '▾ Contraer nivel' : '▸ Desplegar nivel';
-        return;
+        const isVirtual = (container.getAttribute('data-virtual') === '1');
+        if (willShow) {
+          // Si se va a mostrar y es un nodo de sucursal virtual, forzar recarga
+          if (isVirtual) {
+            return loadNextLevel(empId, true);
+          }
+          container.style.display = 'block';
+          if (btn) btn.textContent = '▾ Contraer nivel';
+          return;
+        } else {
+          // Ocultar nodo; si es virtual, marcarlo como obsoleto para que recargue después
+          container.style.display = 'none';
+          if (btn) btn.textContent = '▸ Desplegar nivel';
+          if (isVirtual) {
+            container.dataset.loaded = '0';
+            container.innerHTML = '';
+          }
+          return;
+        }
       }
 
       // Estado de carga
@@ -614,8 +634,12 @@
       container.innerHTML = '<div class="text-muted small">Cargando...</div>';
 
       try {
-        const resp = await fetch(`/dashboard/subtree/${empId}?anio=${_selectedYear}&mes=${_selectedMonth}&showBajas=${_includeBajas}`, {
-          headers: { 'X-Requested-With': 'fetch' }
+        // Construir URL con timestamp para evitar caché y respetar el periodo seleccionado.
+        const ts = Date.now();
+        const url = `/dashboard/subtree/${empId}?anio=${_selectedYear}&mes=${_selectedMonth}&showBajas=${_includeBajas}&_ts=${ts}`;
+        const resp = await fetch(url, {
+          headers: { 'X-Requested-With': 'fetch' },
+          cache: 'no-store'
         });
         if (!resp.ok) {
           const msg = await resp.text();
@@ -641,6 +665,49 @@
       if (!empId) return;
       loadNextLevel(empId);
     });
+
+    // En vista agrupada por sucursal (líder de ruta), el botón ▸/▾ del encabezado
+    // (por ejemplo "SUPERVISION 2") por defecto SOLO abre/cierra el collapse (no hace fetch).
+    // Para sucursales virtuales SUPERVISION 1..6 debemos re-consultar BD cada vez que se despliega.
+    // Estrategia: interceptar el click, recargar el subárbol padre por AJAX (force), y luego abrir
+    // el collapse ya con HTML fresco.
+    document.addEventListener('click', async function(e){
+      const cbtn = e.target.closest('[data-branch-toggle="1"][data-virtual-branch="1"]');
+      if (!cbtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const parentEmpId = cbtn.getAttribute('data-parent-emp-id');
+      const collapseId = cbtn.getAttribute('data-collapse-id');
+      if (!parentEmpId || !collapseId) return;
+
+      // Si ya está abierto el collapse, solo cerrar (sin recargar)
+      const currentTarget = document.getElementById(collapseId);
+      if (currentTarget && currentTarget.classList.contains('show')) {
+        if (window.bootstrap && window.bootstrap.Collapse) {
+          const inst = window.bootstrap.Collapse.getOrCreateInstance(currentTarget, { toggle: false });
+          inst.hide();
+        } else {
+          currentTarget.classList.remove('show');
+        }
+        return;
+      }
+
+      try {
+        await loadNextLevel(parentEmpId, true);
+      } catch (err) {
+        console.error('Error recargando sucursal virtual:', err);
+      }
+
+      // Abrir el collapse (si existe en el DOM ya actualizado)
+      const target = document.getElementById(collapseId);
+      if (target && window.bootstrap && window.bootstrap.Collapse) {
+        const inst = window.bootstrap.Collapse.getOrCreateInstance(target, { toggle: false });
+        inst.show();
+      } else if (target) {
+        target.classList.add('show');
+      }
+    }, true);
 
     // Guardado rápido (AJAX) para evitar recargar toda la página al capturar un KPI
     document.addEventListener('submit', async function(e){

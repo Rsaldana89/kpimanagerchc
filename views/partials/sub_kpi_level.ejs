@@ -62,7 +62,17 @@
         <div class="card">
           <div class="card-header d-flex justify-content-between align-items-center">
             <div>
-              <button class="btn btn-sm btn-outline-secondary me-2" type="button" data-bs-toggle="collapse" data-bs-target="#<%= collapseId %>" aria-expanded="false" aria-controls="<%= collapseId %>">
+              <% const isVirtualGroup = /^SUPERVISION\s+[1-6]$/i.test(String(currentBranch || '').trim()); %>
+              <button class="btn btn-sm btn-outline-secondary me-2" type="button"
+                      data-bs-toggle="collapse"
+                      data-bs-target="#<%= collapseId %>"
+                      aria-expanded="false"
+                      aria-controls="<%= collapseId %>"
+                      data-branch-toggle="1"
+                      data-collapse-id="<%= collapseId %>"
+                      data-parent-emp-id="<%= typeof parentEmpleadoId !== 'undefined' ? parentEmpleadoId : '' %>"
+                      data-branch-name="<%= currentBranch %>"
+                      data-virtual-branch="<%= isVirtualGroup ? '1' : '0' %>">
                 ▸
               </button>
               <strong><%= currentBranch %></strong>

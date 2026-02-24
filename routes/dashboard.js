@@ -6,6 +6,8 @@ const { logAction } = require('../services/logger');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { scoreKpi } = require('../services/kpiScoring');
+// Helpers for virtual supervisory branches: determine effective puesto and mirror results
+const { getKPIsForEmployee, getEffectivePositionId, mirrorVirtualSucursalKpi } = require('../services/kpiVirtual');
 const multer = require('multer');
 // Importación de Excel (calificaciones masivas) - usamos memoria para evitar archivos temporales
 const upload = multer({
@@ -388,7 +390,8 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
     // Agregar empleados efectivos al arreglo de nodos
     if (effectiveEmps && effectiveEmps.length) {
       for (const emp of effectiveEmps) {
-        const subKpis = await getKPIsByPosition(emp.puesto_id);
+        // Obtener los KPIs de este colaborador aplicando la regla de sucursal virtual
+        const subKpis = await getKPIsForEmployee(emp.id, getKPIsByPosition);
         const subRes = await getKpiResultsForEmployee(emp.id, year);
         const hasChildren = puestoMap.some(p => p.responde_a_id === emp.puesto_id);
         let canApprove = await isDirectBossByPuesto(currentUser, emp.id);
@@ -573,8 +576,10 @@ router.get('/', isAuth, async (req, res) => {
       // session store no está configurado).  No debería impactar al flujo.
     }
 
-    // Obtener los KPIs asignados a este usuario a través de su puesto
-    const kpis = await getKPIsByPosition(user.puesto_id);
+    // Obtener los KPIs asignados a este usuario, aplicando la regla de sucursal virtual.
+    // Si el usuario pertenece a una sucursal virtual SUPERVISION 1..6 y no es supervisor (puesto 46),
+    // se cargan los KPIs del puesto 46.  De lo contrario se cargan los KPIs de su puesto real.
+    const kpis = await getKPIsForEmployee(user.id, getKPIsByPosition);
     // Obtener los resultados del usuario para cada KPI y mes del año seleccionado
     const resultados = await getKpiResultsForEmployee(user.id, selectedYear);
 
@@ -671,6 +676,7 @@ router.get('/', isAuth, async (req, res) => {
       resultados,
       subordinateTree,
       feedback,
+      currentEmployeeId: user.id,
       currentEmpNo,
       currentEmpName,
       currentYear: selectedYear,
@@ -759,13 +765,18 @@ router.get('/subtree/:empleadoId', isAuth, async (req, res) => {
     // Construir SOLO el siguiente nivel
     const nodes = await buildDirectSubordinateNodes(user, effectiveTargetPuestoId, puestos, year, month, showBajas, parentRouteId);
 
+    // Establecer cabeceras de no-caché para evitar que proxies o navegadores almacenen el HTML del subárbol.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
     // Renderizar solo el fragmento HTML del siguiente nivel
-	  return res.render('partials/sub_kpi_level', {
+    return res.render('partials/sub_kpi_level', {
       nodes,
       selectedYear: year,
       selectedMonth: month,
-	    showBajas,
+      showBajas,
       groupBySucursal,
+      parentEmpleadoId: empleadoId,
       layout: false
     });
   } catch (err) {
@@ -990,6 +1001,12 @@ router.post('/save', isAuth, async (req, res) => {
         },
         req
       });
+      // Replicar la calificación en sucursales virtuales, si aplica
+      try {
+        await mirrorVirtualSucursalKpi(targetEmployeeId, kpi_id, anio, mes, user.id);
+      } catch (e) {
+        console.error('Error en mirrorVirtualSucursalKpi (save):', e);
+      }
     } else {
       // Guardado de comentario sin tocar valor/color (evita sobrescrituras).
       try {
@@ -1018,6 +1035,12 @@ router.post('/save', isAuth, async (req, res) => {
         },
         req
       });
+      // Replicar comentario en sucursales virtuales, si aplica
+      try {
+        await mirrorVirtualSucursalKpi(targetEmployeeId, kpi_id, anio, mes, user.id);
+      } catch (e) {
+        console.error('Error en mirrorVirtualSucursalKpi (comment):', e);
+      }
     }
     // Si la petición viene vía fetch/AJAX, devolver JSON para evitar recargar el dashboard
     if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
@@ -1201,6 +1224,13 @@ router.post('/visto', isAuth, async (req, res) => {
       [targetEmployeeId, kpi_id, anio, mes, user.id]
     );
 
+    // Replicar el estado de aprobación para sucursales virtuales, si aplica
+    try {
+      await mirrorVirtualSucursalKpi(targetEmployeeId, kpi_id, anio, mes, user.id);
+    } catch (e) {
+      console.error('Error en mirrorVirtualSucursalKpi (visto):', e);
+    }
+
     if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
       return res.json({ ok: true, locked: true, visto_por: user.id, visto_nombre: user.nombre || '', visto_fecha: new Date() });
     }
@@ -1265,6 +1295,13 @@ async function sendToReviewHandler(req, res) {
          revision_motivo = VALUES(revision_motivo)`,
       [targetEmployeeId, kpi_id, anio, mes, user.id, motivo]
     );
+
+    // Replicar el estado de revisión para sucursales virtuales, si aplica
+    try {
+      await mirrorVirtualSucursalKpi(targetEmployeeId, kpi_id, anio, mes, user.id);
+    } catch (e) {
+      console.error('Error en mirrorVirtualSucursalKpi (review):', e);
+    }
 
     return res.json({ ok: true, locked: false, review: true, revision_por: user.id, revision_nombre: user.nombre || '', revision_fecha: new Date(), revision_motivo: motivo });
   } catch (err) {
@@ -1471,10 +1508,14 @@ async function buildEmployeeWorkbook({ employeeId, year, month, mode }) {
   // KPIs que el empleado ya haya capturado en el año (histórico).  Para
   // el modo mensual se usan solo los KPIs del puesto actual.
   let kpis;
+  // Calcular el puesto efectivo según la regla de sucursal virtual
+  const effectivePuestoId = await getEffectivePositionId(emp.id);
   if (mode === 'annual') {
-    kpis = await getKPIsAnnualHistorico({ employeeId, year, puestoActualId: emp.puesto_id });
+    // En reporte anual incluir los KPIs del puesto efectivo (p.ej. 46 en sucursal virtual)
+    kpis = await getKPIsAnnualHistorico({ employeeId, year, puestoActualId: effectivePuestoId });
   } else {
-    kpis = await getKPIsByPosition(emp.puesto_id);
+    // En reporte mensual usar solo los KPIs del puesto efectivo
+    kpis = await getKPIsByPosition(effectivePuestoId);
   }
   const resultados = await getKpiResultsForEmployee(employeeId, year);
   const feedbackMap = await fetchFeedbackMapForEmployee(employeeId, year);

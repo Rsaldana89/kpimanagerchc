@@ -1,4 +1,24 @@
 <% const empNoFmt = node.empleado.incidencia_id ? String(node.empleado.incidencia_id).padStart(5,'0') : ''; %>
+<%
+  /*
+   * Determinar si este empleado pertenece a una sucursal virtual "SUPERVISION 1..6".
+   * Se usa para decidir si los niveles bajo esta tarjeta deben recargarse siempre
+   * desde el servidor (sin cache) al desplegarse, de modo que reflejen la
+   * replicación de KPIs en las sucursales virtuales.  La detección se hace
+   * comparando el nombre de la sucursal actual con una expresión regular que
+   * coincide con "SUPERVISION" seguido de un número entre 1 y 6, ignorando
+   * mayúsculas/minúsculas y espacios extra.  Para referenciar este valor en el
+   * cliente, se exporta como atributo `data-virtual` en los botones y
+   * contenedores de subárbol.
+   */
+  const _branchName = (node.empleado && node.empleado.sucursal_nombre ? String(node.empleado.sucursal_nombre).trim() : '');
+  let isVirtualBranch = false;
+  try {
+    isVirtualBranch = /^SUPERVISION\s+[1-6]$/i.test(_branchName);
+  } catch (ex) {
+    isVirtualBranch = false;
+  }
+%>
 
 <%
   /*
@@ -311,10 +331,17 @@
       <button type="button"
               class="btn btn-sm btn-outline-secondary mt-2"
               data-subtree-btn
-              data-emp-id="<%= node.empleado.id %>">
+              data-emp-id="<%= node.empleado.id %>"
+              data-virtual="<%= isVirtualBranch ? '1' : '0' %>"
+              data-sucursal-id="<%= node.empleado.sucursal_id %>"
+              data-puesto-id="<%= node.empleado.puesto_id %>">
         ▸ Desplegar nivel
       </button>
-      <div id="subtree-<%= node.empleado.id %>" data-subtree-container style="display:none;"></div>
+      <div id="subtree-<%= node.empleado.id %>"
+           data-subtree-container
+           data-virtual="<%= isVirtualBranch ? '1' : '0' %>"
+           data-sucursal-id="<%= node.empleado.sucursal_id %>"
+           style="display:none;"></div>
     <% } %>
   </div>
 </div>
