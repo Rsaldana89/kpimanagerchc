@@ -1817,8 +1817,15 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
   // Conjunto único de puestos efectivos para los empleados seleccionados
   const puestoIds = [...new Set(Array.from(effectivePuestoByEmp.values()))];
   const puestoPlace = puestoIds.map(() => '?').join(',');
+  // ----------------------------------------------------------------------
+  // Cargar los KPIs asignados a los puestos efectivos y los pesos
+  // correspondientes.  Es fundamental incluir pk.peso en la selección,
+  // puesto que la tabla kpis NO contiene columna "peso".  Si no
+  // traemos pk.peso, kpi.peso queda undefined y el puntaje ponderado se
+  // calcula como vacío.  Seleccionamos pk.peso AS peso para que los
+  // objetos devueltos tengan la propiedad "peso" disponible.
   const [pkRows] = await pool.execute(
-    `SELECT pk.puesto_id, k.*
+    `SELECT pk.puesto_id, k.*, pk.peso AS peso
      FROM puesto_kpis pk
      JOIN kpis k ON pk.kpi_id = k.id
      WHERE pk.puesto_id IN (${puestoPlace})
@@ -1966,9 +1973,18 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
         });
         const lastRow = ws.lastRow;
         styleSemaforo(lastRow.getCell(ws.getColumn('semaforo').number), color);
+        // Para "Resultado" (valor) NO dejamos el texto en blanco porque después
+        // se pinta el fondo verde claro (editable) y el blanco se pierde.
+        // Aplicamos semáforo (para alineación/bold) y luego forzamos el color de fuente.
         styleSemaforo(lastRow.getCell(ws.getColumn('valor').number), color);
-        // Estilo también en puntaje ponderado
-        styleSemaforo(lastRow.getCell(ws.getColumn('puntaje_ponderado').number), color);
+        // Estilo en puntaje ponderado solo si hay valor (si no, dejamos la celda limpia)
+        const pponCellTmp = lastRow.getCell(ws.getColumn('puntaje_ponderado').number);
+        if (puntajePonderado !== '' && puntajePonderado !== null && puntajePonderado !== undefined) {
+          styleSemaforo(pponCellTmp, color);
+        } else {
+          // Alineación consistente aunque no haya valor
+          pponCellTmp.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        }
         styleStatus(lastRow.getCell(ws.getColumn('estado').number), estado);
 
         // --------------------------------------------
@@ -1980,6 +1996,9 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
           pattern: 'solid',
           fgColor: { argb: 'FFE8F5E9' }
         };
+        // Asegurar legibilidad del número en fondo claro
+        valorCell.font = { ...(valorCell.font || {}), color: { argb: 'FF000000' }, bold: true };
+        valorCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
         valorCell.protection = { locked: false };
 
         // Comentario KPI → fondo amarillo claro y desbloqueado
