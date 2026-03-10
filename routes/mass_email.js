@@ -4,6 +4,15 @@ const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { startBatch, cancelBatch, isRunning: isBatchRunning, getSendDelayMs } = require('../services/batchEmailRunner');
+const {
+  fetchLiveEmployeeBase,
+  getSnapshotRows,
+  getPeriodStatus,
+  closePeriod,
+  reopenPeriod,
+  lockSnapshot,
+  reopenSnapshot
+} = require('../services/periodLocks');
 
 function getStuckMinutes() {
   const env = process.env.EMAIL_BATCH_STUCK_MINUTES;
@@ -111,40 +120,20 @@ async function saveBatchConfig({ enabled, start_day, send_time, batch_limit, res
 // =========================================================
 
 async function fetchEmployeesStatus({ year, month }) {
-  // 1) KPIs asignados por puesto
+  // 1) KPIs asignados por puesto para periodos abiertos sin snapshot.
   const [kpiCountsRows] = await pool.execute(
     'SELECT puesto_id, COUNT(*) AS total FROM puesto_kpis GROUP BY puesto_id'
   );
   const kpiCountMap = new Map();
   (kpiCountsRows || []).forEach(r => kpiCountMap.set(Number(r.puesto_id), Number(r.total)));
 
-  // 2) Empleados (incluye sucursales) + correo + departamento + sucursal
-  let employees = [];
-  try {
-    const [empRows] = await pool.execute(
-      `SELECT e.id, e.incidencia_id, e.nombre, e.correo,
-              e.puesto_id, e.departamento_id, e.sucursal_id,
-              d.nombre AS departamento_nombre,
-              s.nombre AS sucursal_nombre
-       FROM empleados e
-       LEFT JOIN departamentos d ON e.departamento_id = d.id
-       LEFT JOIN sucursales s ON e.sucursal_id = s.id
-       WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
-       ORDER BY e.nombre`
-    );
-    employees = empRows || [];
-  } catch (e) {
-    // Si no existe la tabla sucursales, degradar sin esa unión.
-    const [empRows] = await pool.execute(
-      `SELECT e.id, e.incidencia_id, e.nombre, e.correo,
-              e.puesto_id, e.departamento_id, e.sucursal_id,
-              d.nombre AS departamento_nombre
-       FROM empleados e
-       LEFT JOIN departamentos d ON e.departamento_id = d.id
-       WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
-       ORDER BY e.nombre`
-    );
-    employees = empRows || [];
+  // 2) Base de empleados del periodo.
+  //    - Si existe snapshot, usarlo siempre para mantener consistencia histórica.
+  //    - Si no existe, usar la base viva actual (sin crear snapshot automáticamente).
+  let employees = await getSnapshotRows({ year, month });
+  const usedSnapshot = (employees || []).length > 0;
+  if (!usedSnapshot) {
+    employees = await fetchLiveEmployeeBase();
   }
 
   if (!employees.length) {
@@ -160,7 +149,8 @@ async function fetchEmployeesStatus({ year, month }) {
         email_sent: 0,
         email_pending: 0,
         percent_email_sent: 0
-      }
+      },
+      usedSnapshot
     };
   }
 
@@ -180,8 +170,8 @@ async function fetchEmployeesStatus({ year, month }) {
     resCountMap.set(r.empleado_id, prev + 1);
   });
 
-  // 4) Correos enviados en periodo (preferimos traer la fecha si existe)
-  const sentMap = new Map(); // empleado_id -> enviado_el (Date|string|true)
+  // 4) Correos enviados en periodo
+  const sentMap = new Map();
   try {
     const [sentRows] = await pool.execute(
       'SELECT empleado_id, enviado_el FROM kpi_emails_sent WHERE anio = ? AND mes = ?',
@@ -202,7 +192,9 @@ async function fetchEmployeesStatus({ year, month }) {
 
   // 5) Lista enriquecida
   const empList = employees.map(e => {
-    const total = kpiCountMap.get(Number(e.puesto_id)) || 0;
+    const total = (typeof e.total_kpis === 'number' && !Number.isNaN(e.total_kpis))
+      ? e.total_kpis
+      : (kpiCountMap.get(Number(e.puesto_id)) || 0);
     const filled = resCountMap.get(Number(e.id)) || 0;
     const completed = total > 0 ? (filled >= total) : false;
     const correo = (e.correo || '').trim();
@@ -277,7 +269,7 @@ async function fetchEmployeesStatus({ year, month }) {
     percent_email_sent: withEmail ? Math.round((emailSent / withEmail) * 100) : 0
   };
 
-  return { employees: empList, departments, stats };
+  return { employees: empList, departments, stats, usedSnapshot };
 }
 
 // =========================================================
@@ -318,7 +310,8 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
     const isSendingNow = isBatchRunning();
     if (currentRun && !isSendingNow) isStuck = true;
 
-    const { employees, departments, stats } = await fetchEmployeesStatus({ year, month });
+    const { employees, departments, stats, usedSnapshot } = await fetchEmployeesStatus({ year, month });
+    const periodStatus = await getPeriodStatus({ year, month });
 
     // Compatibilidad con la vista (nombres esperados)
     const selectedYear = year;
@@ -334,6 +327,16 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
       percent: d.percent,
       emailPercent: d.percent_email_sent
     }));
+    const statsForView = {
+      totalEmployees: stats.total_employees,
+      completed: stats.completed,
+      completionPercent: stats.percent_completed,
+      withEmail: stats.with_email,
+      withoutEmail: stats.without_email,
+      emailed: stats.email_sent,
+      pendingEmail: stats.email_pending,
+      emailPercent: stats.percent_email_sent
+    };
 
     res.render('admin_mass_email', {
       title: 'Envío masivo de KPIs',
@@ -346,7 +349,9 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
       employees,
       departments,
       departmentsSummary,
-      stats,
+      stats: statsForView,
+      periodStatus,
+      usedSnapshot,
       recentRuns,
       currentRun,
       delayMs,
@@ -362,6 +367,66 @@ router.get('/admin/mass-email', isAuth, requireRole(['admin']), async (req, res)
     req.flash('error', 'No se pudo cargar la pantalla de envío masivo. Revisa los logs.');
     res.redirect('/admin');
   }
+});
+
+router.post('/admin/mass-email/close-period', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const year = clampInt(req.body.anio, 2000, 2100, defaultPrevMonth().year);
+    const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
+    const userId = req.session && req.session.user ? req.session.user.id : null;
+    const snap = await closePeriod({ year, month, userId });
+    if (snap && snap.snapshot_at) {
+      req.flash('info', `Periodo ${month}/${year} cerrado correctamente. Se respetará el snapshot automático del fin de mes (${snap.count || 0} empleados).`);
+    } else {
+      req.flash('info', `Periodo ${month}/${year} cerrado correctamente. Aún no hay snapshot del fin de mes para este periodo.`);
+    }
+  } catch (err) {
+    console.error('[MassEmail] Error cerrando periodo:', err);
+    req.flash('error', 'No se pudo cerrar el periodo ni generar el snapshot.');
+  }
+  return res.redirect(`/admin/mass-email?anio=${req.body.anio || ''}&mes=${req.body.mes || ''}`);
+});
+
+
+
+router.post('/admin/mass-email/lock-snapshot', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const year = clampInt(req.body.anio, 2000, 2100, defaultPrevMonth().year);
+    const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
+    const snap = await lockSnapshot({ year, month });
+    req.flash('info', `Se bloqueó la base de personal del periodo ${month}/${year}. Snapshot actualizado con ${snap.count || 0} empleados.`);
+  } catch (err) {
+    console.error('[MassEmail] Error bloqueando snapshot:', err);
+    req.flash('error', 'No se pudo bloquear la base de personal del periodo.');
+  }
+  return res.redirect(`/admin/mass-email?anio=${req.body.anio || ''}&mes=${req.body.mes || ''}`);
+});
+
+router.post('/admin/mass-email/reopen-snapshot', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const year = clampInt(req.body.anio, 2000, 2100, defaultPrevMonth().year);
+    const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
+    await reopenSnapshot({ year, month });
+    req.flash('info', `Se reabrió la base de personal del periodo ${month}/${year}. El porcentaje volverá a usar la base viva hasta que exista un nuevo snapshot.`);
+  } catch (err) {
+    console.error('[MassEmail] Error reabriendo snapshot:', err);
+    req.flash('error', 'No se pudo reabrir la base de personal del periodo.');
+  }
+  return res.redirect(`/admin/mass-email?anio=${req.body.anio || ''}&mes=${req.body.mes || ''}`);
+});
+
+router.post('/admin/mass-email/reopen-period', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const year = clampInt(req.body.anio, 2000, 2100, defaultPrevMonth().year);
+    const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
+    const userId = req.session && req.session.user ? req.session.user.id : null;
+    await reopenPeriod({ year, month, userId });
+    req.flash('info', `Periodo ${month}/${year} reabierto correctamente.`);
+  } catch (err) {
+    console.error('[MassEmail] Error reabriendo periodo:', err);
+    req.flash('error', 'No se pudo reabrir el periodo.');
+  }
+  return res.redirect(`/admin/mass-email?anio=${req.body.anio || ''}&mes=${req.body.mes || ''}`);
 });
 
 router.post('/admin/mass-email/config', isAuth, requireRole(['admin']), async (req, res) => {
@@ -395,10 +460,13 @@ router.post('/admin/mass-email/cancel', isAuth, requireRole(['admin']), async (r
 });
 
 router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req, res) => {
+  const fallbackYear = defaultPrevMonth().year;
+  const fallbackMonth = defaultPrevMonth().month;
+  // Compatibilidad: la vista envía anio/mes, pero algunos flujos internos pueden
+  // enviar year/month. Tomar cualquiera de los dos para no regresar al periodo default.
+  const year = clampInt(req.body.anio ?? req.body.year, 2000, 2100, fallbackYear);
+  const month = clampInt(req.body.mes ?? req.body.month, 1, 12, fallbackMonth);
   try {
-    const year = clampInt(req.body.year, 2000, 2100, defaultPrevMonth().year);
-    const month = clampInt(req.body.month, 1, 12, defaultPrevMonth().month);
-
     const rawMode = String(req.body.sendMode || '').toLowerCase().trim();
     const fallbackMode = (req.body.includeSent ? 'all' : 'pending');
     const sendMode = (rawMode === 'pending' || rawMode === 'resend' || rawMode === 'all') ? rawMode : fallbackMode;
@@ -421,60 +489,52 @@ router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req
     const sendAll = (req.body.sendAll === '1' || req.body.sendAll === 'true');
 
     // -------------------------------------------------
-    // Resolver destinatarios (SIEMPRE con correo válido)
+    // Resolver destinatarios usando la misma base que la pantalla:
+    // si existe snapshot, se usa; si no, se toma la base viva actual.
     // -------------------------------------------------
     let employeeIds = [];
+    let baseRows = await getSnapshotRows({ year, month });
+    if (!baseRows.length) {
+      baseRows = await fetchLiveEmployeeBase();
+    }
 
-    // Helper para subquery de enviados
-    const subquerySent = 'SELECT empleado_id FROM kpi_emails_sent WHERE anio = ? AND mes = ?';
+    const sentMap = new Set();
+    try {
+      const [sentRows] = await pool.execute(
+        'SELECT empleado_id FROM kpi_emails_sent WHERE anio = ? AND mes = ?',
+        [year, month]
+      );
+      (sentRows || []).forEach(r => sentMap.add(Number(r.empleado_id)));
+    } catch (e) {
+      // ignore if table missing
+    }
 
     if (sendAll || departmentIds.length > 0) {
-      const params = [];
-      let query =
-        `SELECT e.id
-         FROM empleados e
-         LEFT JOIN departamentos d ON e.departamento_id = d.id
-         WHERE (d.nombre IS NULL OR d.nombre <> 'BAJA')
-           AND e.correo IS NOT NULL AND e.correo <> ''`;
-
-      if (departmentIds.length) {
-        query += ` AND e.departamento_id IN (${departmentIds.map(() => '?').join(',')})`;
-        params.push(...departmentIds);
-      }
-
-      if (sendMode === 'pending') {
-        query += ` AND e.id NOT IN (${subquerySent})`;
-        params.push(year, month);
-      } else if (sendMode === 'resend') {
-        query += ` AND e.id IN (${subquerySent})`;
-        params.push(year, month);
-      }
-
-      query += ' ORDER BY e.id';
-
-      const [rows] = await pool.execute(query, params);
-      employeeIds = (rows || []).map(r => Number(r.id)).filter(n => Number.isFinite(n));
+      employeeIds = (baseRows || [])
+        .filter(r => {
+          const hasEmail = !!String(r.correo || '').trim();
+          if (!hasEmail) return false;
+          if (departmentIds.length && !departmentIds.includes(Number(r.departamento_id || 0))) return false;
+          const alreadySent = sentMap.has(Number(r.id));
+          if (sendMode === 'pending' && alreadySent) return false;
+          if (sendMode === 'resend' && !alreadySent) return false;
+          return true;
+        })
+        .map(r => Number(r.id))
+        .filter(n => Number.isFinite(n));
     } else if (employeeIdsFromForm.length) {
-      // Validar correos
-      const params = [...employeeIdsFromForm];
-      let query =
-        `SELECT e.id
-         FROM empleados e
-         LEFT JOIN departamentos d ON e.departamento_id = d.id
-         WHERE e.id IN (${employeeIdsFromForm.map(() => '?').join(',')})
-           AND (d.nombre IS NULL OR d.nombre <> 'BAJA')
-           AND e.correo IS NOT NULL AND e.correo <> ''`;
-
-      if (sendMode === 'pending') {
-        query += ` AND e.id NOT IN (${subquerySent})`;
-        params.push(year, month);
-      } else if (sendMode === 'resend') {
-        query += ` AND e.id IN (${subquerySent})`;
-        params.push(year, month);
-      }
-
-      const [rows] = await pool.execute(query, params);
-      employeeIds = (rows || []).map(r => Number(r.id)).filter(n => Number.isFinite(n));
+      employeeIds = (baseRows || [])
+        .filter(r => employeeIdsFromForm.includes(Number(r.id)))
+        .filter(r => {
+          const hasEmail = !!String(r.correo || '').trim();
+          if (!hasEmail) return false;
+          const alreadySent = sentMap.has(Number(r.id));
+          if (sendMode === 'pending' && alreadySent) return false;
+          if (sendMode === 'resend' && !alreadySent) return false;
+          return true;
+        })
+        .map(r => Number(r.id))
+        .filter(n => Number.isFinite(n));
     } else {
       req.flash('error', 'No se seleccionó ningún destinatario.');
       return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
@@ -518,11 +578,11 @@ router.post('/admin/mass-email/send', isAuth, requireRole(['admin']), async (req
   } catch (err) {
     if (err && err.code === 'BATCH_ALREADY_RUNNING') {
       req.flash('error', 'Ya hay un envío en curso. Espera a que termine para iniciar otro.');
-      return res.redirect('/admin/mass-email');
+      return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
     }
     console.error('[MassEmail] Error iniciando envío:', err);
     req.flash('error', 'No se pudo iniciar el envío. Revisa los logs.');
-    return res.redirect('/admin/mass-email');
+    return res.redirect(`/admin/mass-email?anio=${year}&mes=${month}`);
   }
 });
 

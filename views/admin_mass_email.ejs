@@ -20,6 +20,12 @@
   const yearOptions = [];
   const baseYear = Number.isFinite(Number(_selectedYear)) ? Number(_selectedYear) : (new Date()).getFullYear();
   for (let y = baseYear - 2; y <= baseYear + 1; y++) yearOptions.push(y);
+  const fmtDateTime = (d) => {
+    if (!d) return '';
+    const dt = new Date(d);
+    if (isNaN(dt.getTime())) return '';
+    return dt.toLocaleString('es-MX');
+  };
 %>
 
 <div class="d-flex align-items-start justify-content-between flex-wrap gap-2 mt-3 mb-3">
@@ -288,13 +294,119 @@
       </div>
       <div class="col-md-3">
         <button class="btn btn-outline-primary" type="submit">Actualizar periodo</button>
-        <div class="form-text">* Por defecto: mes anterior.</div>
+        <div class="form-text">* Por defecto: mes anterior. El porcentaje usa el snapshot automático tomado al último día natural del mes.</div>
       </div>
       <div class="col-md-4 text-md-end">
         <div class="small text-muted">Periodo seleccionado</div>
         <div class="fw-semibold"><%= selectedMonthName %> <%= _selectedYear %></div>
       </div>
     </form>
+
+    <div class="border rounded p-3 mt-3 bg-white">
+      <div class="fw-semibold mb-3">Información del periodo</div>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <div class="border border-info-subtle rounded-3 p-3 h-100 bg-info-subtle shadow-sm">
+            <div class="small text-uppercase text-secondary fw-semibold">Personal tomado en cuenta para el porcentaje</div>
+            <div class="d-flex align-items-center justify-content-between gap-2 mt-1">
+              <div class="fw-semibold">Base de personal</div>
+              <% if (periodStatus && periodStatus.has_snapshot) { %>
+                <span class="badge bg-info text-dark">Bloqueado</span>
+              <% } else { %>
+                <span class="badge bg-secondary">Abierto</span>
+              <% } %>
+            </div>
+            <div class="small text-muted mt-2">
+              <% if (periodStatus && periodStatus.snapshot_at) { %>
+                Fecha de bloqueo de personal: <strong><%= fmtDateTime(periodStatus.snapshot_at) %></strong>
+              <% } else { %>
+                Aún no hay bloqueo de personal para este periodo.
+              <% } %>
+            </div>
+            <div class="small text-muted mt-1">
+              <% if (periodStatus && periodStatus.has_snapshot) { %>
+                <!-- Descripción cuando existe snapshot: se fija el denominador con la base congelada -->
+                Se tomó un snapshot del personal y esa base fija el denominador de % KPIs completos.
+              <% } else { %>
+                <!-- Descripción cuando no existe snapshot: se usa base actual y podría cambiar el porcentaje -->
+                Mientras no exista snapshot, el porcentaje usa la base de datos actual y puede modificar el % de KPIs completos si se agrega personal.
+              <% } %>
+            </div>
+            <div class="mt-3">
+              <% if (periodStatus && periodStatus.has_snapshot) { %>
+                <form method="POST" action="/admin/mass-email/reopen-snapshot" class="d-inline">
+                  <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                  <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                  <button type="submit" class="btn btn-outline-secondary btn-sm" onclick="return confirm('¿Reabrir el snapshot de personal de este periodo? El porcentaje volverá a usar la base viva actual.');">
+                    Reabrir snapshot de personal
+                  </button>
+                </form>
+              <% } else { %>
+                <form method="POST" action="/admin/mass-email/lock-snapshot" class="d-inline">
+                  <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                  <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                  <button type="submit" class="btn btn-outline-info btn-sm" onclick="return confirm('¿Bloquear el personal de este periodo ahora mismo? Se generará un snapshot nuevo para fijar el porcentaje.');">
+                    Bloquear personal del periodo
+                  </button>
+                </form>
+              <% } %>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-md-6">
+          <div class="border <%= (periodStatus && periodStatus.is_closed) ? "border-danger-subtle bg-danger-subtle" : "border-success-subtle bg-success-subtle" %> rounded-3 p-3 h-100 shadow-sm">
+            <div class="small text-uppercase text-secondary fw-semibold">Conteo de completitud y captura de KPIs</div>
+            <div class="d-flex align-items-center justify-content-between gap-2 mt-1">
+              <div class="fw-semibold">Cierre del periodo</div>
+              <% if (periodStatus && periodStatus.is_closed) { %>
+                <span class="badge bg-danger">Bloqueado</span>
+              <% } else { %>
+                <span class="badge bg-success">Abierto</span>
+              <% } %>
+            </div>
+            <div class="small text-muted mt-2">
+              <% if (periodStatus && periodStatus.closed_at) { %>
+                Fecha de bloqueo del periodo: <strong><%= fmtDateTime(periodStatus.closed_at) %></strong>
+              <% } else { %>
+                El periodo sigue abierto para captura y conteo de completitud.
+              <% } %>
+            </div>
+            <div class="small text-muted mt-1">
+              <% if (periodStatus && periodStatus.is_closed) { %>
+                Usuarios y managers ya no pueden modificar KPIs de este periodo.
+              <% } else { %>
+                Los KPIs de este periodo todavía pueden completarse.
+              <% } %>
+            </div>
+            <div class="mt-3 d-flex flex-wrap gap-2">
+              <% if (periodStatus && periodStatus.is_closed) { %>
+                <form method="POST" action="/admin/mass-email/reopen-period" class="d-inline">
+                  <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                  <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                  <button type="submit" class="btn btn-outline-warning btn-sm" onclick="return confirm('¿Reabrir este periodo? Los usuarios y managers volverán a poder editar KPIs.');">
+                    Reabrir cierre del periodo
+                  </button>
+                </form>
+              <% } else { %>
+                <form method="POST" action="/admin/mass-email/close-period" class="d-inline">
+                  <input type="hidden" name="anio" value="<%= _selectedYear %>" />
+                  <input type="hidden" name="mes" value="<%= _selectedMonth %>" />
+                  <button type="submit" class="btn btn-outline-danger btn-sm" onclick="return confirm('¿Cerrar este periodo? El porcentaje ya queda fijado con el snapshot automático del fin de mes y, después de cerrar, usuarios y managers ya no podrán actualizar KPIs de este periodo.');">
+                    Cerrar periodo
+                  </button>
+                </form>
+              <% } %>
+              <% if (periodStatus && periodStatus.reopened_at) { %>
+                <div class="align-self-center text-muted small">
+                  Reabierto el: <strong><%= fmtDateTime(periodStatus.reopened_at) %></strong>
+                </div>
+              <% } %>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <hr class="my-3" />
 

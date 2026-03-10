@@ -141,9 +141,9 @@ document.addEventListener('DOMContentLoaded', function() {
   monthSelect.addEventListener('change', updateExportImport);
   updateExportImport();
 
-  // Advertencia al importar en periodos cerrados: hasta el día 25 del mes se considera
+  // Advertencia al importar en periodos cerrados: hasta el día 26 del mes se considera
   // abierto el periodo anterior.  Si se intenta importar un periodo anterior al
-  // periodo por defecto cuando ya cambió el mes (día > 25), mostrar confirmación.
+  // periodo por defecto cuando ya cambió el mes (día > 26), mostrar confirmación.
   const importForm = document.getElementById('import-form');
   importForm.addEventListener('submit', function(e) {
     try {
@@ -152,7 +152,9 @@ document.addEventListener('DOMContentLoaded', function() {
       const now = new Date();
       let defYear = now.getFullYear();
       let defMonth = now.getMonth() + 1; // 1-12
-      if (now.getDate() <= 25) {
+      if (now.getDate() <= 26) {
+        // Extiende el periodo abierto un día adicional (hasta el 26 inclusive).
+        // A partir del día 27 se considera cerrado el periodo anterior.
         defMonth -= 1;
         if (defMonth < 1) {
           defMonth = 12;
@@ -162,7 +164,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const isOlder = (y < defYear) || (y === defYear && m < defMonth);
       if (isOlder) {
         const monthNames = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-        const msg = `El periodo ${monthNames[m-1]} ${y} ya está cerrado desde el 26 del mes siguiente. ¿Realmente desea sobreescribir los valores?`;
+        const msg = `El periodo ${monthNames[m-1]} ${y} ya está cerrado desde el 27 del mes siguiente. ¿Realmente desea sobreescribir los valores?`;
         if (!window.confirm(msg)) {
           e.preventDefault();
         }

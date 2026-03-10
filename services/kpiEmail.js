@@ -183,6 +183,20 @@ async function workbookToPdfBuffer(workbook, title = '') {
           return;
         }
       });
+      // Calcular el total ponderado del periodo antes de filtrar columnas.  Esto
+      // permite mostrar en el PDF el mismo "resultado final del mes" que se ve
+      // en el frontend.  Usamos la columna "puntaje ponderado" de la hoja.
+      let totalMes = 0;
+      const puntajePonderadoIdx = headerNorm.findIndex(h => h.includes('puntaje ponderado') || h.includes('puntaje_ponderado'));
+      if (puntajePonderadoIdx >= 0) {
+        for (let i = 1; i < originalRows.length; i++) {
+          const raw = sanitize(originalRows[i][puntajePonderadoIdx] || '');
+          if (!raw) continue;
+          const num = Number(String(raw).replace(',', '.'));
+          if (Number.isFinite(num)) totalMes += num;
+        }
+      }
+
       // Filtrar columnas para cada fila
       if (columnsToRemove.length > 0) {
         for (let i = 0; i < rows.length; i++) {
@@ -413,6 +427,94 @@ async function workbookToPdfBuffer(workbook, title = '') {
           // Incrementar Y
           y += rowHeight + 2 * cellPaddingY + rowGap;
         });
+      }
+
+      // ------------------------ RESULTADO FINAL DEL MES ------------------------
+      // Imprimir el total ponderado y su color antes del pie de página con un
+      // acabado más ejecutivo: una tarjeta, puntaje destacado y badge de color.
+      if (Number.isFinite(totalMes) && totalMes > 0) {
+        const totalMesRedondeado = Number(totalMes.toFixed(2));
+        let nombreColor = 'Rojo';
+        let colorTexto = '#B42318';
+        let colorFondo = '#FEE4E2';
+        let colorBorde = '#FDA29B';
+        if (totalMesRedondeado >= 71) {
+          nombreColor = 'Verde';
+          colorTexto = '#027A48';
+          colorFondo = '#ECFDF3';
+          colorBorde = '#6CE9A6';
+        } else if (totalMesRedondeado >= 41) {
+          nombreColor = 'Amarillo';
+          colorTexto = '#B54708';
+          colorFondo = '#FFFAEB';
+          colorBorde = '#FEC84B';
+        }
+
+        const cardHeight = 36;
+        const cardWidth = Math.min(availableWidth, 420);
+        const labelWidth = 165;
+        const scoreBoxWidth = 54;
+        const badgeWidth = 78;
+        const cardX = marginLeft;
+        const badgeX = cardX + cardWidth - badgeWidth - 14;
+        const scoreX = badgeX - scoreBoxWidth - 12;
+
+        if (y + cardHeight + 10 > maxY) {
+          doc.addPage();
+          try {
+            const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'DejaVuSans.ttf');
+            doc.font(fontPath);
+          } catch (e) {}
+          doc.fontSize(9);
+          y = doc.y;
+        }
+
+        // Tarjeta contenedora
+        doc.save();
+        doc.roundedRect(cardX, y, cardWidth, cardHeight, 8)
+          .fillAndStroke('#F8FAFC', '#D0D5DD');
+        doc.restore();
+
+        // Etiqueta del bloque
+        try {
+          const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'DejaVuSans.ttf');
+          doc.font(fontPath);
+        } catch (e) {}
+        doc.fillColor('#344054').fontSize(11);
+        doc.text('Resultado final del mes', cardX + 12, y + 11, {
+          width: labelWidth,
+          align: 'left'
+        });
+
+        // Caja del puntaje
+        doc.save();
+        doc.roundedRect(scoreX, y + 7, scoreBoxWidth, 22, 6)
+          .fillAndStroke('#FFFFFF', '#D0D5DD');
+        doc.restore();
+        doc.font('Helvetica-Bold').fillColor('#101828').fontSize(12);
+        doc.text(String(totalMesRedondeado), scoreX, y + 11, {
+          width: scoreBoxWidth,
+          align: 'center'
+        });
+
+        // Badge del color final
+        doc.save();
+        doc.roundedRect(badgeX, y + 7, badgeWidth, 22, 11)
+          .fillAndStroke(colorFondo, colorBorde);
+        doc.restore();
+        try {
+          const fontPath = path.join(__dirname, '..', 'assets', 'fonts', 'DejaVuSans.ttf');
+          doc.font(fontPath);
+        } catch (e) {}
+        doc.fillColor(colorTexto).fontSize(10);
+        doc.text(nombreColor, badgeX, y + 12, {
+          width: badgeWidth,
+          align: 'center'
+        });
+
+        y += cardHeight + 8;
+        doc.fillColor('#000000');
+        doc.fontSize(9);
       }
 
       // ------------------------ FOOTER ------------------------

@@ -73,6 +73,7 @@ const { scheduleMonthlyEmails } = require('./services/emailScheduler');
 // sincronizar puestos y correos desde incidencias.  Se carga aquí
 // para que se configure apenas arranque el servidor.
 const { scheduleEmployeeSync } = require('./services/employeeSyncScheduler');
+const { schedulePeriodSnapshots } = require('./services/periodSnapshotScheduler');
 
 // Registro de rutas
 app.use('/', authRoutes);
@@ -117,5 +118,12 @@ app.listen(PORT, () => {
     console.log('Programador de sincronización de empleados iniciado');
   } catch (e) {
     console.error('No se pudo iniciar el programador de sincronización de empleados:', e);
+  }
+  // Iniciar generador automático de snapshots de periodo
+  try {
+    schedulePeriodSnapshots();
+    console.log('Programador de snapshots de periodo iniciado');
+  } catch (e) {
+    console.error('No se pudo iniciar el programador de snapshots de periodo:', e);
   }
 });

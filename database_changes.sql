@@ -76,3 +76,56 @@ CREATE TABLE IF NOT EXISTS kpi_batch_runs (
   last_message VARCHAR(255) NULL,
   last_error VARCHAR(255) NULL
 );
+
+-- ================================================
+-- Tabla para congelar la base de empleados por periodo
+--
+-- Esta tabla almacena un «snapshot» de los empleados y el
+-- número de KPIs asignados a su puesto en el momento en que
+-- se genera el periodo.  Permite que los cálculos de
+-- porcentaje de completitud y envío de correos no se vean
+-- afectados por la incorporación de empleados o KPIs después
+-- del cierre del periodo.  Cada combinación (empleado_id,
+-- anio, mes) es única; si se intenta insertar un registro
+-- duplicado se ignorará.  No se definen claves externas a
+-- puestos/departamentos/sucursales para permitir que esta
+-- tabla funcione en instalaciones que carecen de esas tablas.
+CREATE TABLE IF NOT EXISTS kpi_periodo_empleados (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  empleado_id INT NOT NULL,
+  anio INT NOT NULL,
+  mes INT NOT NULL,
+  incidencia_id VARCHAR(50) NULL,
+  nombre VARCHAR(255) NULL,
+  correo VARCHAR(255) NULL,
+  puesto_id INT DEFAULT NULL,
+  departamento_id INT DEFAULT NULL,
+  departamento_nombre VARCHAR(255) NULL,
+  sucursal_id INT DEFAULT NULL,
+  sucursal_nombre VARCHAR(255) NULL,
+  total_kpis INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_empleado_periodo (empleado_id, anio, mes)
+);
+
+ALTER TABLE kpi_periodo_empleados ADD COLUMN IF NOT EXISTS incidencia_id VARCHAR(50) NULL;
+ALTER TABLE kpi_periodo_empleados ADD COLUMN IF NOT EXISTS nombre VARCHAR(255) NULL;
+ALTER TABLE kpi_periodo_empleados ADD COLUMN IF NOT EXISTS correo VARCHAR(255) NULL;
+ALTER TABLE kpi_periodo_empleados ADD COLUMN IF NOT EXISTS departamento_nombre VARCHAR(255) NULL;
+ALTER TABLE kpi_periodo_empleados ADD COLUMN IF NOT EXISTS sucursal_nombre VARCHAR(255) NULL;
+-- Tabla para controlar el cierre/reapertura manual de periodos y
+-- registrar la fecha oficial en que se generó el snapshot.
+CREATE TABLE IF NOT EXISTS kpi_periodo_cierres (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  anio INT NOT NULL,
+  mes INT NOT NULL,
+  cerrado TINYINT(1) NOT NULL DEFAULT 0,
+  snapshot_el DATETIME NULL,
+  cerrado_por INT NULL,
+  cerrado_el DATETIME NULL,
+  reabierto_por INT NULL,
+  reabierto_el DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_periodo_cierre (anio, mes)
+);

@@ -6,6 +6,7 @@ const { logAction } = require('../services/logger');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { scoreKpi } = require('../services/kpiScoring');
+const { getPeriodStatus } = require('../services/periodLocks');
 // Helpers for virtual supervisory branches: determine effective puesto and mirror results
 // Import helpers for virtual supervisory branches.  In addition to the
 // existing helpers, also import VIRTUAL_BRANCH_REGEX so that we can
@@ -57,6 +58,40 @@ function getDefaultPeriod(now = new Date()) {
   let month = now.getMonth() + 1; // 1-12
   // Hasta el día 25 inclusive se utiliza el mes anterior
   if (now.getDate() <= 25) {
+    month -= 1;
+    if (month < 1) {
+      month = 12;
+      year -= 1;
+    }
+  }
+  return { year, month };
+}
+
+/*
+ * Calcula el periodo de cierre basado en la fecha actual.  Esta función es
+ * similar a getDefaultPeriod pero extiende un día adicional el periodo
+ * anterior.  Mientras que getDefaultPeriod cambia al mes actual a partir
+ * del día 26 (mostrando/seleccionando el nuevo periodo), el cierre de
+ * captura de resultados se debe aplicar un día después para evitar
+ * adelantamientos por diferencias de zona horaria en el servidor.
+ *
+ * En concreto, hasta el día 26 inclusive se considera que el periodo de
+ * captura todavía corresponde al mes anterior.  A partir del día 27 se
+ * cierra la captura del mes previo y se bloquea la edición excepto para
+ * administradores.  Esta distinción permite mostrar el periodo nuevo en el
+ * dashboard desde el día 26, pero mantener abierta la captura del mes
+ * anterior hasta el día 26 completo (23:59) independientemente de la hora
+ * del servidor.
+ *
+ * @param {Date} [now] Objeto Date opcional para pruebas; por defecto usa
+ *     new Date().
+ * @returns {{year:number, month:number}} Objeto con año y mes (1-12).
+ */
+function getClosurePeriod(now = new Date()) {
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1; // 1-12
+  // Hasta el día 26 inclusive se utiliza el mes anterior
+  if (now.getDate() <= 26) {
     month -= 1;
     if (month < 1) {
       month = 12;
@@ -864,24 +899,47 @@ router.post('/save', isAuth, async (req, res) => {
   }
   try {
     const hasValue = !(valor === undefined || valor === null || String(valor).trim() === '');
+    let manualPeriodStatus = null;
 
-    // Candado por cierre de periodo: si el usuario intenta guardar un resultado
-    // en un periodo que ya fue cerrado (mes anterior cuando ha pasado el día 25),
-    // se bloquea a menos que el usuario sea administrador.  El periodo
-    // considerado cerrado es cualquier periodo anterior al periodo por defecto
-    // calculado según la fecha actual (getDefaultPeriod).  Los administradores
-    // pueden editar periodos cerrados.
+    // Candado manual: si el periodo fue cerrado desde la pantalla de envío masivo,
+    // sólo un administrador puede seguir editándolo hasta que se reabra.
     try {
-      const def = getDefaultPeriod();
       const pYear = parseInt(anio, 10);
       const pMonth = parseInt(mes, 10);
+      manualPeriodStatus = await getPeriodStatus({ year: pYear, month: pMonth });
+      const isClosedManually = !!(manualPeriodStatus && manualPeriodStatus.is_closed);
+      const userRoleNow = (user && user.role) || '';
+      if (isClosedManually && userRoleNow !== 'admin') {
+        const msgClosed = 'El periodo está cerrado y no se pueden modificar las calificaciones.';
+        if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
+          return res.status(423).json({ ok: false, closed: true, error: msgClosed });
+        }
+        req.flash('error', msgClosed);
+        return res.redirect(`/dashboard?anio=${anio}&mes=${mes}`);
+      }
+    } catch (manualLockErr) {
+      // Si la tabla de cierres no existe o falla, seguimos con la lógica de fecha.
+    }
+
+    // Candado por cierre de periodo: si el usuario intenta guardar un resultado
+    // en un periodo que ya fue cerrado (mes anterior cuando ha pasado el día 26),
+    // se bloquea a menos que el usuario sea administrador.  La definición del
+    // periodo de cierre utiliza getClosurePeriod (ver arriba) que extiende
+    // un día adicional respecto a getDefaultPeriod para compensar diferencias
+    // de zona horaria.  De este modo, la captura del mes anterior permanece
+    // abierta hasta el día 26 completo y se cierra a partir del día 27.
+    try {
+      const def = getClosurePeriod();
+      const pYear = parseInt(anio, 10);
+      const pMonth = parseInt(mes, 10);
+      const skipDateLock = !!(manualPeriodStatus && manualPeriodStatus.has_record && !manualPeriodStatus.is_closed);
       const periodIsOlder = (
         (pYear < def.year) ||
         (pYear === def.year && pMonth < def.month)
       );
       // Solo permitir a admin editar periodos cerrados
       const userRoleNow = (user && user.role) || '';
-      if (periodIsOlder && userRoleNow !== 'admin') {
+      if (!skipDateLock && periodIsOlder && userRoleNow !== 'admin') {
         const msgClosed = 'El periodo ya fue cerrado y no se pueden modificar las calificaciones.';
         if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
           return res.status(423).json({ ok: false, closed: true, error: msgClosed });
@@ -890,7 +948,7 @@ router.post('/save', isAuth, async (req, res) => {
         return res.redirect(`/dashboard?anio=${anio}&mes=${mes}`);
       }
     } catch (cerrErr) {
-      // Si getDefaultPeriod no está disponible o falla, ignorar y continuar
+      // Si getClosurePeriod no está disponible o falla, ignorar y continuar
     }
 
     // Obtener definición del KPI para calcular color automáticamente (modelo nuevo)
