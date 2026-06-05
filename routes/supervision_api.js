@@ -272,21 +272,30 @@ router.get('/empleados-disponibles', isAuth, requireRole(['admin', 'manager']), 
     let where = '';
     const params = [];
     if (soloOperaciones) {
-      // Capital Humano puede traer estos empleados como departamento
-      // "Operaciones Sucursales" o como departamento/sucursal virtual SUPERVISION 1..6.
-      // Al editar una ruta especifica permitimos buscar por cualquiera de esas fuentes.
+      // Capital Humano puede traer estos empleados de varias formas:
+      //   1) Departamento OPERACIONES SUCURSALES
+      //   2) Departamento OPERACIONES (sin la palabra SUCURSALES)
+      //   3) Departamento SUPERVISION 1..6
+      //   4) Sucursal virtual SUPERVISION 1..6
+      //
+      // Por eso la busqueda de colaboradores debe aceptar OPERACIONES completo,
+      // no solo OPERACIONES SUCURSALES.  La ruta especifica se sigue respetando
+      // para los detectados por departamento/sucursal SUPERVISION X, pero los
+      // empleados de OPERACIONES quedan disponibles para asignarse manualmente
+      // a cualquier ruta desde la pantalla.
       if (rutaId) {
         where += `AND (
-                    (UPPER(COALESCE(d.nombre, '')) LIKE '%OPERACIONES%'
-                     AND UPPER(COALESCE(d.nombre, '')) LIKE '%SUCURSAL%')
+                    UPPER(COALESCE(d.nombre, '')) LIKE '%OPERACIONES%'
                     OR sd.id = ?
                     OR sv.id = ?
                   ) `;
         params.push(rutaId, rutaId);
       } else {
-        where += `AND UPPER(COALESCE(d.nombre, '')) LIKE '%OPERACIONES%'
-                  AND UPPER(COALESCE(d.nombre, '')) LIKE '%SUCURSAL%' `;
+        where += `AND UPPER(COALESCE(d.nombre, '')) LIKE '%OPERACIONES%' `;
       }
+      // Este endpoint alimenta el selector de colaboradores, por lo que no
+      // debe mezclar supervisores. Los supervisores se administran en su selector.
+      where += `AND UPPER(COALESCE(p.nombre, '')) NOT LIKE '%SUPERVISOR%' `;
     }
     if (q) {
       where += `AND (

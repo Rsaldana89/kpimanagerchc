@@ -86,7 +86,7 @@
       <div class="card h-100">
         <div class="card-body">
           <h5 class="h6 fw-bold">Agregar colaborador a la ruta</h5>
-          <div class="text-muted small mb-2">Busca empleados de Operaciones Sucursales o detectados por sucursal/departamento SUPERVISION 1–6.</div>
+          <div class="text-muted small mb-2">Busca empleados del departamento Operaciones u Operaciones Sucursales, o detectados por sucursal/departamento SUPERVISION 1–6.</div>
           <div class="row g-2 align-items-end">
             <div class="col-12 col-md-5">
               <label class="form-label">Buscar empleado</label>
@@ -310,7 +310,7 @@ document.addEventListener('DOMContentLoaded', function() {
         opt.textContent = (emp.incidencia_id ? emp.incidencia_id + ' - ' : '') + emp.nombre + ' | ' + (emp.puesto || 'Sin puesto') + ' | ' + (emp.departamento || 'Sin depto');
         collabSelect.appendChild(opt);
       });
-      collabStatus.textContent = empleados.length ? (empleados.length + ' empleado(s) disponibles.') : 'No se encontraron empleados disponibles de Operaciones Sucursales ni detectados por sucursal/departamento de esta ruta.';
+      collabStatus.textContent = empleados.length ? (empleados.length + ' empleado(s) disponibles.') : 'No se encontraron empleados disponibles de Operaciones, Operaciones Sucursales ni detectados por sucursal/departamento de esta ruta.';
     } catch (e) {
       console.error('Error al buscar colaboradores:', e);
       collabSelect.innerHTML = '<option value="">No se pudo buscar</option>';
