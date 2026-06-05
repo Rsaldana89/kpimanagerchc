@@ -68,11 +68,23 @@ async function ensureSupervisionTables() {
     CREATE TABLE IF NOT EXISTS empleado_supervision_ruta (
       empleado_id INT NOT NULL,
       ruta_id TINYINT UNSIGNED NOT NULL,
+      -- Rol en la ruta: 'supervisor' o 'colaborador'.  El valor por defecto
+      -- para registros existentes será 'colaborador'.
+      rol_en_ruta ENUM('supervisor','colaborador') NOT NULL DEFAULT 'colaborador',
+      -- Indica si este empleado hereda los KPIs del supervisor asignado a la ruta.
+      hereda_kpis TINYINT(1) NOT NULL DEFAULT 1,
+      -- Indica si este empleado hereda la calificación del supervisor asignado a la ruta.
+      hereda_calificacion_supervisor TINYINT(1) NOT NULL DEFAULT 1,
+      -- Fecha y usuario que realizaron la asignación manual.
+      asignado_por INT NULL,
+      asignado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      -- Estado de la asignación (baja lógica).  1 = activa, 0 = inactiva.
       activo TINYINT(1) NOT NULL DEFAULT 1,
       actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (empleado_id),
       KEY idx_esr_ruta (ruta_id),
+      KEY idx_esr_rol (rol_en_ruta),
       CONSTRAINT fk_esr_empleado
         FOREIGN KEY (empleado_id) REFERENCES empleados(id)
         ON DELETE CASCADE
@@ -83,6 +95,27 @@ async function ensureSupervisionTables() {
         ON UPDATE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // En caso de que la tabla empleado_supervision_ruta ya exista con menos
+  // columnas, intentar agregar las columnas nuevas de forma segura.  Si ya
+  // existen, el error se ignora silenciosamente.  Esto permite que la función
+  // sea idempotente y no falle cuando se ejecuta varias veces.
+  const alterStatements = [
+    "ALTER TABLE empleado_supervision_ruta ADD COLUMN IF NOT EXISTS rol_en_ruta ENUM('supervisor','colaborador') NOT NULL DEFAULT 'colaborador'",
+    "ALTER TABLE empleado_supervision_ruta ADD COLUMN IF NOT EXISTS hereda_kpis TINYINT(1) NOT NULL DEFAULT 1",
+    "ALTER TABLE empleado_supervision_ruta ADD COLUMN IF NOT EXISTS hereda_calificacion_supervisor TINYINT(1) NOT NULL DEFAULT 1",
+    "ALTER TABLE empleado_supervision_ruta ADD COLUMN IF NOT EXISTS asignado_por INT NULL",
+    "ALTER TABLE empleado_supervision_ruta ADD COLUMN IF NOT EXISTS asignado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE empleado_supervision_ruta ADD KEY IF NOT EXISTS idx_esr_rol (rol_en_ruta)"
+  ];
+  for (const stmt of alterStatements) {
+    try {
+      await pool.execute(stmt);
+    } catch (e) {
+      // MySQL < 8 no soporta IF NOT EXISTS para columnas o llaves.
+      // Si la columna o llave ya existe, ignoramos el error.
+    }
+  }
 }
 
 function parseRutaId(val) {
@@ -198,13 +231,16 @@ router.get('/routes/:rutaId/employees', isAuth, requireRole(['admin', 'manager']
     // Incluye:
     //   1) Empleados de la sucursal virtual SUPERVISION X (cualquier puesto)
     //   2) Empleados asignados a la ruta mediante empleado_supervision_ruta (cualquier puesto)
+    //   3) Empleados cuyo departamento actual en incidencias sea SUPERVISION X
     const [rows] = await pool.execute(
       `SELECT DISTINCT e.id, e.nombre, e.puesto_id, p.nombre AS puesto
        FROM empleados e
        JOIN puestos p ON p.id = e.puesto_id
        LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        WHERE (
          e.sucursal_id = ?
+         OR sd.id = ?
          OR e.id IN (
            SELECT esr.empleado_id
            FROM empleado_supervision_ruta esr
@@ -213,7 +249,7 @@ router.get('/routes/:rutaId/employees', isAuth, requireRole(['admin', 'manager']
        )
          AND (d.nombre IS NULL OR UPPER(d.nombre) <> 'BAJA')
        ORDER BY e.nombre`,
-      [rutaInfo.virtualSucursalId, rutaId]
+      [rutaInfo.virtualSucursalId, rutaId, rutaId]
     );
     return res.json({ ok: true, employees: rows, virtualSucursalId: rutaInfo.virtualSucursalId });
   } catch (err) {
@@ -302,9 +338,11 @@ router.post('/routes/:rutaId/employees', isAuth, requireRole(['admin']), express
       return res.status(400).json({ ok: false, error: 'Solo se pueden asignar supervisores de sucursal a la ruta' });
     }
 
-    // En la nueva lógica, el responsable de la ruta se asigna por sucursal virtual:
-    // - Supervisor/Auxiliar debe tener sucursal_id = (sucursal virtual "SUPERVISION X")
-    // - Opcionalmente lo forzamos al departamento OPERACIONES.
+    // En la nueva lógica, el responsable de la ruta se guarda en
+    // empleado_supervision_ruta para que la sincronización de personal no lo
+    // borre al actualizar sucursal_id/departamento_id desde incidencias.
+    // Mantener también la sucursal virtual conserva compatibilidad con vistas
+    // antiguas, pero la relación oficial de KPI queda en empleado_supervision_ruta.
     const [opsRows] = await pool.execute(
       "SELECT id FROM departamentos WHERE UPPER(nombre) = 'OPERACIONES' LIMIT 1"
     );
@@ -312,6 +350,12 @@ router.post('/routes/:rutaId/employees', isAuth, requireRole(['admin']), express
 
     // Garantizar un único Supervisor y un único Auxiliar por ruta (para que la UI sea clara)
     if (puestoId === 46) {
+      await pool.execute(
+        `UPDATE empleado_supervision_ruta
+         SET activo = 0
+         WHERE ruta_id = ? AND rol_en_ruta = 'supervisor' AND activo = 1 AND empleado_id <> ?`,
+        [rutaId, employeeId]
+      );
       await pool.execute(
         'UPDATE empleados SET sucursal_id = NULL WHERE sucursal_id = ? AND puesto_id = 46 AND id <> ?',
         [rutaInfo.virtualSucursalId, employeeId]
@@ -327,6 +371,21 @@ router.post('/routes/:rutaId/employees', isAuth, requireRole(['admin']), express
     await pool.execute(
       'UPDATE empleados SET sucursal_id = ?, departamento_id = COALESCE(?, departamento_id) WHERE id = ? LIMIT 1',
       [rutaInfo.virtualSucursalId, operacionesId, employeeId]
+    );
+
+    await pool.execute(
+      `INSERT INTO empleado_supervision_ruta
+        (empleado_id, ruta_id, rol_en_ruta, hereda_kpis, hereda_calificacion_supervisor, activo, asignado_por, asignado_en)
+       VALUES (?, ?, 'supervisor', 0, 0, 1, ?, NOW())
+       ON DUPLICATE KEY UPDATE
+         ruta_id = VALUES(ruta_id),
+         rol_en_ruta = 'supervisor',
+         hereda_kpis = 0,
+         hereda_calificacion_supervisor = 0,
+         activo = 1,
+         asignado_por = VALUES(asignado_por),
+         asignado_en = NOW()`,
+      [employeeId, rutaId, req.session?.user?.id || null]
     );
 
     return res.json({ ok: true });
@@ -349,6 +408,15 @@ router.delete('/routes/:rutaId/employees/:empId', isAuth, requireRole(['admin'])
     if (!rutaInfo?.virtualSucursalId) {
       return res.status(400).json({ ok: false, error: 'No existe la sucursal virtual para esta ruta' });
     }
+
+    await pool.execute(
+      `UPDATE empleado_supervision_ruta
+       SET activo = 0,
+           asignado_por = ?,
+           asignado_en = NOW()
+       WHERE empleado_id = ? AND ruta_id = ?`,
+      [req.session?.user?.id || null, empId, rutaId]
+    );
 
     await pool.execute(
       `UPDATE empleados

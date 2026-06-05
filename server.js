@@ -61,6 +61,8 @@ const branchRoutes = require('./routes/branches');
 const massEmailRoutes = require('./routes/mass_email');
 const supervisionRoutes = require('./routes/supervision');
 const supervisionToolsRoutes = require('./routes/supervision_tools');
+// API de supervisión (administración de rutas y asignaciones)
+const supervisionApiRoutes = require('./routes/supervision_api');
 
 // Cargar el programador de correos.  Se ejecutará una tarea
 // recurrente para enviar automáticamente los resultados de KPIs el día
@@ -88,6 +90,11 @@ app.use('/', branchRoutes);
 app.use('/', massEmailRoutes);
 // Rutas para gestionar las rutas de supervisión
 app.use('/supervision', supervisionRoutes);
+
+// Rutas API para administración de rutas de supervisión.  Estas rutas se
+// exponen bajo /api/supervision y devuelven JSON.  No afectan la
+// interfaz existente y pueden convivir con las rutas HTML actuales.
+app.use('/api/supervision', supervisionApiRoutes);
 
 // Rutas de administración para herramientas de supervisión
 // Montar en raíz para exponer /admin/supervision y subrutas

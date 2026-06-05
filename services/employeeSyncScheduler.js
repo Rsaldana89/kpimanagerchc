@@ -262,6 +262,25 @@ async function resolveImportDestino(departamentoOrigen, deptIdByNameUpper) {
   return { deptId, sucursalId, deptForPuesto, esBaja };
 }
 
+// Devuelve true si el empleado tiene una asignación manual activa en
+// empleado_supervision_ruta.  La sincronización automática no debe borrar la
+// sucursal virtual ni la ruta KPI de esos empleados.
+async function hasManualRutaKpi(empleadoId) {
+  if (!empleadoId) return false;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT empleado_id
+       FROM empleado_supervision_ruta
+       WHERE empleado_id = ? AND activo = 1
+       LIMIT 1`,
+      [empleadoId]
+    );
+    return rows.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 // === Gestión de última sincronización ===
 // Ruta del archivo donde se guarda la última fecha/hora de sincronización.
 const lastSyncFile = path.join(__dirname, 'employee_last_sync.json');
@@ -372,6 +391,7 @@ async function syncEmployees() {
       );
       if (!existRows || existRows.length === 0) continue;
       const actual = existRows[0];
+      const tieneRutaManual = await hasManualRutaKpi(actual.id);
       // Actualizar correo si viene con valor
       if (correo !== undefined && correo !== null && String(correo).trim() !== '') {
         const [rEmail] = await pool.execute(
@@ -388,10 +408,17 @@ async function syncEmployees() {
         // Mover a BAJA y deshabilitar login
         const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
         if (bajaId) {
-          await pool.execute(
-            `UPDATE empleados SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0 WHERE incidencia_id = ?`,
-            [bajaId, codigo]
-          );
+          if (tieneRutaManual) {
+            await pool.execute(
+              `UPDATE empleados SET departamento_id = ?, login_enabled = 0 WHERE incidencia_id = ?`,
+              [bajaId, codigo]
+            );
+          } else {
+            await pool.execute(
+              `UPDATE empleados SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0 WHERE incidencia_id = ?`,
+              [bajaId, codigo]
+            );
+          }
           puestosActualizados++;
         }
         continue;
@@ -413,12 +440,21 @@ async function syncEmployees() {
           departamentoId = depOps[0].id;
         }
       }
-      // Actualizar puesto, departamento y sucursal si difieren del actual
-      if (String(actual.puesto_id) !== String(puestoId) || String(actual.departamento_id) !== String(departamentoId) || String(actual.sucursal_id || '') !== String(sucursalId || '')) {
-        await pool.execute(
-          `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
-          [puestoId, departamentoId, sucursalId, codigo]
-        );
+      // Actualizar puesto, departamento y sucursal si difieren del actual.
+      // Si el empleado tiene ruta KPI manual activa, NO sobrescribir sucursal_id.
+      const sucursalFinalComparacion = tieneRutaManual ? actual.sucursal_id : sucursalId;
+      if (String(actual.puesto_id) !== String(puestoId) || String(actual.departamento_id) !== String(departamentoId) || String(actual.sucursal_id || '') !== String(sucursalFinalComparacion || '')) {
+        if (tieneRutaManual) {
+          await pool.execute(
+            `UPDATE empleados SET puesto_id = ?, departamento_id = ? WHERE incidencia_id = ?`,
+            [puestoId, departamentoId, codigo]
+          );
+        } else {
+          await pool.execute(
+            `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
+            [puestoId, departamentoId, sucursalId, codigo]
+          );
+        }
         puestosActualizados++;
       }
     }

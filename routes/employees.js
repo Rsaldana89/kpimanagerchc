@@ -266,6 +266,27 @@ async function resolveImportDestino(departamentoOrigen, deptIdByNameUpper) {
   return { deptId, sucursalId, deptForPuesto, esBaja };
 }
 
+// Devuelve true si el empleado tiene una asignación manual activa en
+// empleado_supervision_ruta.  Cuando existe esta asignación, la sincronización
+// de personal NO debe sobrescribir sucursal_id porque podría borrar la ruta
+// KPI asignada desde la pantalla de supervisión.
+async function hasManualRutaKpi(empleadoId) {
+  if (!empleadoId) return false;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT empleado_id
+       FROM empleado_supervision_ruta
+       WHERE empleado_id = ? AND activo = 1
+       LIMIT 1`,
+      [empleadoId]
+    );
+    return rows.length > 0;
+  } catch (e) {
+    // Si la tabla todavía no existe en una instalación antigua, no romper la importación.
+    return false;
+  }
+}
+
 /*
  * Página de listado de empleados.  Muestra todos los registros de la
  * tabla empleados junto con información de puesto, departamento y
@@ -701,18 +722,36 @@ router.post('/import', isAuth, requireRole(['admin']), async (req, res) => {
       // Comprobar si ya existe empleado
       const [existRows] = await pool.execute('SELECT id FROM empleados WHERE incidencia_id = ?', [codigo]);
       if (existRows.length > 0) {
+        const empleadoId = existRows[0].id;
+        const tieneRutaManual = await hasManualRutaKpi(empleadoId);
         if (esBaja) {
-          await pool.execute(
-            `UPDATE empleados
-             SET nombre = ?, puesto_id = ?, departamento_id = ?, sucursal_id = NULL, login_enabled = 0
-             WHERE incidencia_id = ?`,
-            [nombre, puestoId, departamentoId, codigo]
-          );
+          if (tieneRutaManual) {
+            await pool.execute(
+              `UPDATE empleados
+               SET nombre = ?, puesto_id = ?, departamento_id = ?, login_enabled = 0
+               WHERE incidencia_id = ?`,
+              [nombre, puestoId, departamentoId, codigo]
+            );
+          } else {
+            await pool.execute(
+              `UPDATE empleados
+               SET nombre = ?, puesto_id = ?, departamento_id = ?, sucursal_id = NULL, login_enabled = 0
+               WHERE incidencia_id = ?`,
+              [nombre, puestoId, departamentoId, codigo]
+            );
+          }
         } else {
-          await pool.execute(
-            `UPDATE empleados SET nombre = ?, puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
-            [nombre, puestoId, departamentoId, sucursalId, codigo]
-          );
+          if (tieneRutaManual) {
+            await pool.execute(
+              `UPDATE empleados SET nombre = ?, puesto_id = ?, departamento_id = ? WHERE incidencia_id = ?`,
+              [nombre, puestoId, departamentoId, codigo]
+            );
+          } else {
+            await pool.execute(
+              `UPDATE empleados SET nombre = ?, puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
+              [nombre, puestoId, departamentoId, sucursalId, codigo]
+            );
+          }
         }
       } else {
         await pool.execute(
@@ -839,6 +878,7 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
       );
       if (!existRows || existRows.length === 0) continue;
       const actual = existRows[0];
+      const tieneRutaManual = await hasManualRutaKpi(actual.id);
       // Actualizar correo si viene con valor
       if (correo !== undefined && correo !== null && String(correo).trim() !== '') {
         const [rEmail] = await pool.execute(
@@ -855,10 +895,17 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
         // Mover a BAJA y deshabilitar login
         const bajaId = await ensureDepartamentoIdByNombreUpper('BAJA');
         if (bajaId) {
-          await pool.execute(
-            `UPDATE empleados SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0 WHERE incidencia_id = ?`,
-            [bajaId, codigo]
-          );
+          if (tieneRutaManual) {
+            await pool.execute(
+              `UPDATE empleados SET departamento_id = ?, login_enabled = 0 WHERE incidencia_id = ?`,
+              [bajaId, codigo]
+            );
+          } else {
+            await pool.execute(
+              `UPDATE empleados SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0 WHERE incidencia_id = ?`,
+              [bajaId, codigo]
+            );
+          }
           puestosActualizados++;
         }
         continue;
@@ -880,12 +927,21 @@ router.post('/import-puestos', isAuth, requireRole(['admin']), async (req, res) 
           departamentoId = depOps[0].id;
         }
       }
-      // Actualizar puesto, departamento y sucursal si difieren del actual
-      if (String(actual.puesto_id) !== String(puestoId) || String(actual.departamento_id) !== String(departamentoId) || String(actual.sucursal_id || '') !== String(sucursalId || '')) {
-        await pool.execute(
-          `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
-          [puestoId, departamentoId, sucursalId, codigo]
-        );
+      // Actualizar puesto, departamento y sucursal si difieren del actual.
+      // Si el empleado tiene ruta KPI manual activa, NO sobrescribir sucursal_id.
+      const sucursalFinalComparacion = tieneRutaManual ? actual.sucursal_id : sucursalId;
+      if (String(actual.puesto_id) !== String(puestoId) || String(actual.departamento_id) !== String(departamentoId) || String(actual.sucursal_id || '') !== String(sucursalFinalComparacion || '')) {
+        if (tieneRutaManual) {
+          await pool.execute(
+            `UPDATE empleados SET puesto_id = ?, departamento_id = ? WHERE incidencia_id = ?`,
+            [puestoId, departamentoId, codigo]
+          );
+        } else {
+          await pool.execute(
+            `UPDATE empleados SET puesto_id = ?, departamento_id = ?, sucursal_id = ? WHERE incidencia_id = ?`,
+            [puestoId, departamentoId, sucursalId, codigo]
+          );
+        }
         puestosActualizados++;
       }
     }
@@ -940,9 +996,22 @@ router.post('/import-bajas', isAuth, requireRole(['admin']), async (req, res) =>
     for (let i = 0; i < bajas.length; i += chunkSize) {
       const chunk = bajas.slice(i, i + chunkSize);
       const placeholders = chunk.map(() => '?').join(',');
+      // No borrar sucursal_id si el empleado tiene una ruta KPI manual activa.
+      // La asignación manual se conserva en empleado_supervision_ruta y la sucursal
+      // virtual se mantiene para compatibilidad visual.
       const [result] = await pool.execute(
         `UPDATE empleados
-         SET departamento_id = ?, sucursal_id = NULL, login_enabled = 0
+         SET departamento_id = ?,
+             sucursal_id = CASE
+               WHEN EXISTS (
+                 SELECT 1
+                 FROM empleado_supervision_ruta esr
+                 WHERE esr.empleado_id = empleados.id
+                   AND esr.activo = 1
+               ) THEN sucursal_id
+               ELSE NULL
+             END,
+             login_enabled = 0
          WHERE incidencia_id IN (${placeholders})`,
         [bajaId, ...chunk]
       );

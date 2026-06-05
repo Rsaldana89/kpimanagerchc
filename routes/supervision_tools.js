@@ -284,17 +284,19 @@ router.get('/admin/supervision/export', isAuth, requireRole(['admin']), async (r
               p.nombre AS puesto_nombre,
               d.nombre AS departamento_nombre,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-       WHERE COALESCE(sv.id, sr.ruta_id) IS NOT NULL
+       WHERE COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) IS NOT NULL
          AND e.puesto_id NOT IN (45, 46)
        ${whereBajas}
-       ORDER BY COALESCE(sv.id, sr.ruta_id), s.nombre, e.incidencia_id`
+       ORDER BY COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id), s.nombre, e.incidencia_id`
     );
     if (!emps || !emps.length) {
       return res.status(404).send('No hay empleados asignados a rutas para exportar');
@@ -356,14 +358,16 @@ router.get('/admin/supervision/export/:rutaId', isAuth, requireRole(['admin']), 
               p.nombre AS puesto_nombre,
               d.nombre AS departamento_nombre,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-       WHERE COALESCE(sv.id, sr.ruta_id) = ?
+       WHERE COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ?
          AND e.puesto_id NOT IN (45, 46)
        ${whereBajas}
        ORDER BY s.nombre, e.incidencia_id`,

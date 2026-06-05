@@ -357,28 +357,32 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
               e.departamento_id,
               e.sucursal_id,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id,
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id,
               COALESCE(sv.nombre, r.nombre) AS ruta_nombre,
               p.nombre AS puesto_nombre,
               d.nombre AS departamento_nombre
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
-       LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
-       LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-       LEFT JOIN supervision_rutas r ON r.id = sr.ruta_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
+       LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+       LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
+       -- Para obtener el nombre de la ruta combinamos la ruta asignada manualmente (esr.ruta_id),
+       -- la ruta derivada del departamento (sd.id), la sucursal virtual (sv.id) o la sucursal real (sr.ruta_id)
+       LEFT JOIN supervision_rutas r ON r.id = COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id)
        WHERE e.puesto_id = ? `;
     // Condición para bajas
     if (!showBajas) {
       sql += "AND (d.nombre IS NULL OR d.nombre <> 'BAJA') ";
     }
-    // Condición de filtro por ruta: si se pasa un routeFilterId, filtrar empleados cuya ruta coincide
-    // o no tienen sucursal asignada (e.sucursal_id IS NULL).  Esto evita ocultar colaboradores
-    // que no tienen ruta asignada mientras restringe a los que sí la tienen.
+    // Condición de filtro por ruta: si se pasa un routeFilterId, filtrar solo empleados cuya ruta resuelta coincide.
+    // Importante: NO incluir por e.sucursal_id IS NULL, porque eso mete empleados sin sucursal
+    // aunque pertenezcan a otra ruta manual, provocando que aparezcan en rutas incorrectas.
     const params = [subPuestoId];
     if (routeFilterId !== null && routeFilterId !== undefined) {
-      sql += "AND (COALESCE(sv.id, sr.ruta_id) = ? OR e.sucursal_id IS NULL) ";
+      sql += "AND COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ? ";
       params.push(routeFilterId);
     }
     const [emps] = await pool.execute(sql, params);
@@ -402,24 +406,27 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
                     e.departamento_id,
                     e.sucursal_id,
                     s.nombre AS sucursal_nombre,
-                    COALESCE(sv.id, sr.ruta_id) AS ruta_id,
+                    COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id,
                     COALESCE(sv.nombre, r.nombre) AS ruta_nombre,
                     p.nombre AS puesto_nombre,
                     d.nombre AS departamento_nombre
              FROM empleados e
              LEFT JOIN sucursales s ON s.id = e.sucursal_id
-             LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
-             LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-             LEFT JOIN supervision_rutas r ON r.id = sr.ruta_id
+             LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
              LEFT JOIN puestos p ON e.puesto_id = p.id
              LEFT JOIN departamentos d ON e.departamento_id = d.id
+             LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
+             LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+             LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
+             -- Igualmente, para los puestos hijos utilizamos la misma lógica de ruta: manual (esr), departamento (sd), virtual (sv) o real (sr)
+             LEFT JOIN supervision_rutas r ON r.id = COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id)
              WHERE e.puesto_id = ? `;
           if (!showBajas) {
             childSql += "AND (d.nombre IS NULL OR d.nombre <> 'BAJA') ";
           }
           const childParams = [childId];
-          // Filtro de ruta para hijos: mismos criterios que arriba
-          childSql += "AND (COALESCE(sv.id, sr.ruta_id) = ? OR e.sucursal_id IS NULL) ";
+          // Filtro de ruta para hijos: mismos criterios que arriba, sin incluir empleados sin sucursal de otras rutas
+          childSql += "AND COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ? ";
           childParams.push(routeFilterId);
           const [childRows] = await pool.execute(childSql, childParams);
           if (childRows && childRows.length) {
@@ -516,9 +523,12 @@ async function canAccessEmployeeTree(user, targetEmployeeId) {
   try {
     const [uRows] = await pool.execute(
       `SELECT s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -546,9 +556,12 @@ async function canAccessEmployeeTree(user, targetEmployeeId) {
   let targetRouteId = null;
   try {
     const [trRows] = await pool.execute(
-      `SELECT COALESCE(sv.id, sr.ruta_id) AS ruta_id
+      `SELECT COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -646,13 +659,18 @@ router.get('/', isAuth, async (req, res) => {
     try {
       const [routeRows] = await pool.execute(
         `SELECT s.nombre AS sucursal_nombre,
-                COALESCE(sv.id, sr.ruta_id) AS ruta_id,
+                COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id,
                 COALESCE(sv.nombre, r.nombre) AS ruta_nombre
          FROM empleados e
          LEFT JOIN sucursales s ON s.id = e.sucursal_id
+         LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+         LEFT JOIN departamentos d ON d.id = e.departamento_id
+         LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
          LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
          LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-         LEFT JOIN supervision_rutas r ON r.id = sr.ruta_id
+         -- Resolución de la ruta considerando la asignación manual (esr.ruta_id), la ruta derivada
+         -- de la sucursal virtual (sv.id) y la ruta asociada a la sucursal real (sr.ruta_id)
+         LEFT JOIN supervision_rutas r ON r.id = COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id)
          WHERE e.id = ?
          LIMIT 1`,
         [user.id]
@@ -773,9 +791,12 @@ router.get('/subtree/:empleadoId', isAuth, async (req, res) => {
     const [empRows] = await pool.execute(
       `SELECT e.puesto_id,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -1511,6 +1532,7 @@ async function fetchEmployeeInfo(employeeId) {
      FROM empleados e
      LEFT JOIN puestos p ON e.puesto_id = p.id
      LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
      LEFT JOIN sucursales s ON e.sucursal_id = s.id
      WHERE e.id = ?
      LIMIT 1`,
@@ -1750,11 +1772,13 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
               d.nombre AS departamento_nombre,
               e.sucursal_id,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.puesto_id IN (${pPlace})
@@ -1774,11 +1798,13 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
               d.nombre AS departamento_nombre,
               e.sucursal_id,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN sucursales s ON e.sucursal_id = s.id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -1813,9 +1839,12 @@ async function buildTeamWorkbook({ user, year, month, mode, includeBajas, includ
       const [uRows] = await pool.execute(
         `SELECT e.puesto_id,
                 s.nombre AS sucursal_nombre,
-                COALESCE(sv.id, sr.ruta_id) AS ruta_id
+                COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
          FROM empleados e
          LEFT JOIN sucursales s ON s.id = e.sucursal_id
+         LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+         LEFT JOIN departamentos d ON d.id = e.departamento_id
+         LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
          LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
          LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
          WHERE e.id = ?
@@ -2251,9 +2280,12 @@ router.get('/export/route', isAuth, async (req, res) => {
     const [uRows] = await pool.execute(
       `SELECT e.puesto_id,
               s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -2280,10 +2312,12 @@ router.get('/export/route', isAuth, async (req, res) => {
        FROM empleados e
        LEFT JOIN puestos p ON e.puesto_id = p.id
        LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-       WHERE COALESCE(sv.id, sr.ruta_id) = ?
+       WHERE COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ?
        ${whereBajas}`,
       [rutaId]
     );
@@ -2305,6 +2339,7 @@ router.get('/export/route', isAuth, async (req, res) => {
          FROM empleados e
          LEFT JOIN puestos p ON e.puesto_id = p.id
          LEFT JOIN departamentos d ON e.departamento_id = d.id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
          LEFT JOIN sucursales s ON s.id = e.sucursal_id
          WHERE e.id = ?
          LIMIT 1`,
@@ -2520,9 +2555,12 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
     // Determinar contexto de ruta del usuario
     const [uRows] = await pool.execute(
       `SELECT e.puesto_id, s.nombre AS sucursal_nombre,
-              COALESCE(sv.id, sr.ruta_id) AS ruta_id
+              COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
        FROM empleados e
        LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
        LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
        LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
        WHERE e.id = ?
@@ -2612,9 +2650,12 @@ router.post('/import/route', isAuth, upload.single('file'), async (req, res) => 
       const [eRows] = await pool.execute(
         `SELECT e.id, e.incidencia_id, e.nombre, e.puesto_id,
                 s.nombre AS sucursal_nombre,
-                COALESCE(sv.id, sr.ruta_id) AS ruta_id
+                COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
          FROM empleados e
          LEFT JOIN sucursales s ON s.id = e.sucursal_id
+         LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
+         LEFT JOIN departamentos d ON d.id = e.departamento_id
+         LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
          LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
          LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
          WHERE e.incidencia_id IN (${empNoPlace})
