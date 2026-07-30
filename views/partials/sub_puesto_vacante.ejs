@@ -1,0 +1,50 @@
+<%
+  const puesto = node && node.puesto ? node.puesto : {};
+  const puestoId = Number(puesto.id || 0);
+  const routeId = (node && node.routeFilterId !== null && node.routeFilterId !== undefined)
+    ? Number(node.routeFilterId)
+    : '';
+  const parentEmp = (typeof parentEmpleadoId !== 'undefined' && parentEmpleadoId) ? String(parentEmpleadoId) : '';
+  const parentPuesto = (typeof parentPuestoId !== 'undefined' && parentPuestoId) ? String(parentPuestoId) : '';
+  const parentContainer = (typeof parentContainerId !== 'undefined' && parentContainerId) ? String(parentContainerId) : '';
+  const rawContext = parentContainer || (parentEmp ? ('emp-' + parentEmp) : (parentPuesto ? ('puesto-' + parentPuesto) : 'root'));
+  const safeContext = rawContext.replace(/[^a-zA-Z0-9_-]/g, '_').slice(-100);
+  const vacancyContainerId = 'subtree-puesto-' + puestoId + '-' + safeContext;
+%>
+<div class="card mb-3 ms-3 vacant-position-card"
+     data-vacant-position
+     data-position-name="<%= puesto.nombre || '' %>">
+  <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div class="d-flex align-items-center flex-wrap gap-2">
+      <span class="badge bg-warning text-dark">Puesto vacante</span>
+      <strong><%= puesto.nombre || 'Puesto sin nombre' %></strong>
+      <% if (puesto.departamento_nombre) { %>
+        <span class="text-muted">- <%= puesto.departamento_nombre %></span>
+      <% } %>
+    </div>
+    <span class="vacant-position-status">Sin personal asignado</span>
+  </div>
+
+  <div class="card-body py-3">
+    <p class="mb-2 text-muted small">
+      La cadena jerárquica continúa debajo de este puesto. El jefe superior puede desplegar el nivel y capturar los KPIs del personal subordinado.
+    </p>
+
+    <% if (node.hasChildren && puestoId) { %>
+      <button type="button"
+              class="btn btn-sm btn-outline-warning"
+              data-subtree-puesto-btn
+              data-puesto-id="<%= puestoId %>"
+              data-route-id="<%= routeId %>"
+              data-target-id="<%= vacancyContainerId %>">
+        ▸ Desplegar nivel inferior
+      </button>
+      <div id="<%= vacancyContainerId %>"
+           data-subtree-puesto-container
+           data-route-id="<%= routeId %>"
+           style="display:none;"></div>
+    <% } else { %>
+      <div class="text-muted small">Este puesto no tiene puestos subordinados configurados.</div>
+    <% } %>
+  </div>
+</div>

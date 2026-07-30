@@ -1,68 +1,110 @@
-<% const doGroupBySucursal = (typeof groupBySucursal !== 'undefined') ? !!groupBySucursal : false; %>
+<%
+  const doGroupBySucursal = (typeof groupBySucursal !== 'undefined') ? !!groupBySucursal : false;
+  const levelParentEmpleadoId = (typeof parentEmpleadoId !== 'undefined' && parentEmpleadoId) ? parentEmpleadoId : '';
+  const levelParentPuestoId = (typeof parentPuestoId !== 'undefined' && parentPuestoId) ? parentPuestoId : '';
+  const levelParentContainerId = (typeof parentContainerId !== 'undefined' && parentContainerId) ? parentContainerId : '';
+  const getNodeEmployee = (n) => (n && n.empleado) ? n.empleado : {};
+  const getNodeBranch = (n) => {
+    if (n && n.vacante) return 'Puestos vacantes';
+    const emp = getNodeEmployee(n);
+    return emp.sucursal_nombre || 'Sin sucursal';
+  };
+  const getNodeRoute = (n) => {
+    if (n && n.vacante) return '';
+    const emp = getNodeEmployee(n);
+    return emp.ruta_nombre || '';
+  };
+  const renderNode = (n) => {
+    if (n && n.vacante) {
+      return include('sub_puesto_vacante', {
+        node: n,
+        selectedMonth,
+        selectedYear,
+        parentEmpleadoId: levelParentEmpleadoId,
+        parentPuestoId: levelParentPuestoId,
+        parentContainerId: levelParentContainerId
+      });
+    }
+    return include('sub_kpi_node', { node: n, selectedMonth, selectedYear });
+  };
+  const levelRouteNode = Array.isArray(nodes)
+    ? nodes.find(n => n && n.routeFilterId !== null && n.routeFilterId !== undefined)
+    : null;
+  const levelRouteId = levelRouteNode ? levelRouteNode.routeFilterId : '';
+%>
 
 <% if (!nodes || nodes.length === 0) { %>
-  <div class="text-muted small">Sin colaboradores en este nivel.</div>
+  <div class="text-muted small">Sin colaboradores ni puestos subordinados en este nivel.</div>
 <% } else if (!doGroupBySucursal) { %>
   <% nodes.forEach(function(n) { %>
-    <%- include('sub_kpi_node', { node: n, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
+    <%- renderNode(n) %>
   <% }); %>
 <% } else { %>
-  <% // Ordenar los nodos por nombre de sucursal (real o virtual) para agruparlos
-     nodes.sort(function(a, b) {
-       // Comparación por sucursal, con soporte para ordenar rutas "SUPERVISION X" por número
-       const an = String(a.empleado.sucursal_nombre || '').toLowerCase();
-       const bn = String(b.empleado.sucursal_nombre || '').toLowerCase();
-       const routeRegex = /^supervision\s+(\d+)/i;
-       const ma = routeRegex.exec(an);
-       const mb = routeRegex.exec(bn);
-       if (ma && mb) {
-         // Ordenar por el número de ruta extraído
-         const numA = parseInt(ma[1], 10);
-         const numB = parseInt(mb[1], 10);
-         if (numA !== numB) return numA - numB;
-       }
-       // Para otras combinaciones (o si sólo uno es ruta), ordenar alfabéticamente
-       if (an < bn) return -1;
-       if (an > bn) return 1;
-       // Si están en la misma sucursal, ordenar por rol y luego por nombre
-       function roleWeight(emp) {
-         const puesto = String(emp.empleado.puesto_nombre || '').toUpperCase();
-         if (puesto.includes('ENCARGADO')) return 0;
-         if (puesto.includes('AUXILIAR')) return 1;
-         return 2;
-       }
-       const wa = roleWeight(a);
-       const wb = roleWeight(b);
-       if (wa !== wb) return wa - wb;
-       const na = String(a.empleado.nombre || '').toLowerCase();
-       const nb = String(b.empleado.nombre || '').toLowerCase();
-       if (na < nb) return -1;
-       if (na > nb) return 1;
-       return 0;
-     });
-     let currentBranch = null;
-     let currentRoute = null;
+  <%
+    // Ordenar nodos por sucursal. Los puestos vacantes se agrupan en una
+    // sección independiente para no mezclarlos con una sucursal real.
+    nodes.sort(function(a, b) {
+      const an = String(getNodeBranch(a) || '').toLowerCase();
+      const bn = String(getNodeBranch(b) || '').toLowerCase();
+
+      if (an === 'puestos vacantes' && bn !== 'puestos vacantes') return 1;
+      if (bn === 'puestos vacantes' && an !== 'puestos vacantes') return -1;
+
+      const routeRegex = /^supervision\s+(\d+)/i;
+      const ma = routeRegex.exec(an);
+      const mb = routeRegex.exec(bn);
+      if (ma && mb) {
+        const numA = parseInt(ma[1], 10);
+        const numB = parseInt(mb[1], 10);
+        if (numA !== numB) return numA - numB;
+      }
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+
+      function roleWeight(node) {
+        if (node && node.vacante) return 3;
+        const emp = getNodeEmployee(node);
+        const puesto = String(emp.puesto_nombre || '').toUpperCase();
+        if (puesto.includes('ENCARGADO')) return 0;
+        if (puesto.includes('AUXILIAR')) return 1;
+        return 2;
+      }
+      const wa = roleWeight(a);
+      const wb = roleWeight(b);
+      if (wa !== wb) return wa - wb;
+
+      const aEmp = getNodeEmployee(a);
+      const bEmp = getNodeEmployee(b);
+      const na = String(a && a.vacante ? (a.puesto && a.puesto.nombre) : aEmp.nombre || '').toLowerCase();
+      const nb = String(b && b.vacante ? (b.puesto && b.puesto.nombre) : bEmp.nombre || '').toLowerCase();
+      return na.localeCompare(nb, 'es');
+    });
+
+    let currentBranch = null;
+    let currentRoute = null;
   %>
+
   <% nodes.forEach(function(n, idx) { %>
-    <% const branch = n.empleado.sucursal_nombre || 'Sin sucursal'; %>
-    <% const routeName = n.empleado.ruta_nombre || ''; %>
-    <% // Cuando cambia la sucursal (branch), cerrar el grupo anterior y abrir uno nuevo %>
+    <% const branch = getNodeBranch(n); %>
+    <% const routeName = getNodeRoute(n); %>
     <% if (branch !== currentBranch) { %>
       <% if (currentBranch !== null) { %>
-        </div> <!-- end card-body -->
-        </div> <!-- end collapse -->
-        </div> <!-- end card -->
-      </div> <!-- end mb-3 -->
+          </div>
+          </div>
+        </div>
+      </div>
       <% } %>
       <% currentBranch = branch; %>
       <% currentRoute = routeName; %>
+      <% const parentKey = levelParentEmpleadoId
+           ? ('emp_' + levelParentEmpleadoId)
+           : (levelParentPuestoId ? ('puesto_' + levelParentPuestoId) : 'root'); %>
+      <% const collapseId = 'branchCollapse_' + parentKey + '_' + idx; %>
+      <% const isVirtualGroup = /^SUPERVISION\s+[1-6]$/i.test(String(currentBranch || '').trim()); %>
       <div class="mb-3">
-        <% /* Generar un identificador único para el collapse utilizando el índice */ %>
-        <% const collapseId = 'branchCollapse_' + idx; %>
         <div class="card">
           <div class="card-header d-flex justify-content-between align-items-center">
             <div>
-              <% const isVirtualGroup = /^SUPERVISION\s+[1-6]$/i.test(String(currentBranch || '').trim()); %>
               <button class="btn btn-sm btn-outline-secondary me-2" type="button"
                       data-bs-toggle="collapse"
                       data-bs-target="#<%= collapseId %>"
@@ -70,28 +112,31 @@
                       aria-controls="<%= collapseId %>"
                       data-branch-toggle="1"
                       data-collapse-id="<%= collapseId %>"
-                      data-parent-emp-id="<%= typeof parentEmpleadoId !== 'undefined' ? parentEmpleadoId : '' %>"
+                      data-parent-emp-id="<%= levelParentEmpleadoId %>"
+                      data-parent-puesto-id="<%= levelParentPuestoId %>"
+                      data-parent-container-id="<%= levelParentContainerId %>"
+                      data-route-id="<%= levelRouteId %>"
                       data-branch-name="<%= currentBranch %>"
                       data-virtual-branch="<%= isVirtualGroup ? '1' : '0' %>">
                 ▸
               </button>
               <strong><%= currentBranch %></strong>
-              <% /* Mostrar ruta sólo si es distinta de la sucursal (en virtual coincide) */ %>
               <% if (currentRoute && currentRoute !== currentBranch) { %>
                 <span class="badge bg-info text-dark ms-2">Ruta: <%= currentRoute %></span>
               <% } %>
             </div>
           </div>
           <div id="<%= collapseId %>" class="collapse">
-          <div class="card-body">
+            <div class="card-body">
     <% } %>
-    <%- include('sub_kpi_node', { node: n, selectedMonth: selectedMonth, selectedYear: selectedYear }) %>
-    <% // Si es el último elemento, cerrar las etiquetas abiertas %>
+
+    <%- renderNode(n) %>
+
     <% if (idx === nodes.length - 1) { %>
-          </div> <!-- end card-body -->
-          </div> <!-- end collapse -->
-        </div> <!-- end card -->
-      </div> <!-- end mb-3 -->
+            </div>
+          </div>
+        </div>
+      </div>
     <% } %>
   <% }); %>
 <% } %>

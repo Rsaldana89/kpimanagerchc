@@ -312,6 +312,170 @@ function buildSubordinatePuestoIds(puestoId, puestoMap, visited = new Set()) {
   return subordinates;
 }
 
+/**
+ * Devuelve el camino de puestos desde `targetPuestoId` hacia
+ * `ancestorPuestoId`, sin incluir al ancestro.
+ *
+ * Ejemplo:
+ *   Gerente (1) <- Supervisor (2) <- Auxiliar (3)
+ *   getPuestoPathToAncestor(3, 1) => [3, 2]
+ *
+ * Si el puesto objetivo no pertenece al subárbol del ancestro, devuelve null.
+ */
+function getPuestoPathToAncestor(targetPuestoId, ancestorPuestoId, puestoMap) {
+  const targetId = Number(targetPuestoId);
+  const ancestorId = Number(ancestorPuestoId);
+  if (!targetId || !ancestorId || targetId === ancestorId) return [];
+
+  const byId = new Map((puestoMap || []).map(p => [Number(p.id), p]));
+  const path = [];
+  const visited = new Set();
+  let currentId = targetId;
+
+  while (currentId && !visited.has(currentId)) {
+    if (currentId === ancestorId) return path;
+    visited.add(currentId);
+    path.push(currentId);
+
+    const current = byId.get(currentId);
+    if (!current || current.responde_a_id === null || current.responde_a_id === undefined) {
+      return null;
+    }
+    currentId = Number(current.responde_a_id);
+  }
+
+  return currentId === ancestorId ? path : null;
+}
+
+/**
+ * Resuelve la ruta KPI actual de un empleado usando la misma prioridad del
+ * dashboard: asignación manual, departamento de supervisión, sucursal virtual
+ * y, por último, relación sucursal-ruta.
+ */
+async function resolveEmployeeRouteId(employeeId) {
+  if (!employeeId || isNaN(employeeId)) return null;
+  try {
+    const [rows] = await pool.execute(
+      `SELECT COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id
+       FROM empleados e
+       LEFT JOIN sucursales s ON s.id = e.sucursal_id
+       LEFT JOIN departamentos d ON d.id = e.departamento_id
+       LEFT JOIN empleado_supervision_ruta esr
+         ON esr.empleado_id = e.id AND esr.activo = 1
+       LEFT JOIN supervision_rutas sd
+         ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
+       LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+       LEFT JOIN sucursal_supervision_ruta sr
+         ON sr.sucursal_id = s.id AND sr.activo = 1
+       WHERE e.id = ?
+       LIMIT 1`,
+      [employeeId]
+    );
+    if (!rows.length || rows[0].ruta_id === null || rows[0].ruta_id === undefined) return null;
+    return Number(rows[0].ruta_id);
+  } catch (err) {
+    console.error('No se pudo resolver la ruta del empleado:', err);
+    return null;
+  }
+}
+
+/**
+ * Indica si un puesto tiene al menos una persona activa. Cuando se recibe una
+ * ruta, la ocupación se evalúa únicamente dentro de esa ruta. Las personas en
+ * departamento BAJA no cuentan como ocupantes del puesto.
+ */
+async function puestoHasActiveEmployee(puestoId, routeFilterId = null) {
+  let sql = `SELECT e.id
+             FROM empleados e
+             LEFT JOIN departamentos d ON d.id = e.departamento_id
+             LEFT JOIN sucursales s ON s.id = e.sucursal_id
+             LEFT JOIN empleado_supervision_ruta esr
+               ON esr.empleado_id = e.id AND esr.activo = 1
+             LEFT JOIN supervision_rutas sd
+               ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
+             LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
+             LEFT JOIN sucursal_supervision_ruta sr
+               ON sr.sucursal_id = s.id AND sr.activo = 1
+             WHERE e.puesto_id = ?
+               AND (d.nombre IS NULL OR UPPER(TRIM(d.nombre)) <> 'BAJA') `;
+  const params = [Number(puestoId)];
+  if (routeFilterId !== null && routeFilterId !== undefined && routeFilterId !== '') {
+    sql += `AND COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ? `;
+    params.push(Number(routeFilterId));
+  }
+  sql += 'LIMIT 1';
+
+  const [rows] = await pool.execute(sql, params);
+  return rows.length > 0;
+}
+
+/**
+ * Determina si el usuario puede actuar como jefe del empleado objetivo cuando
+ * los puestos intermedios de la cadena están vacantes.
+ *
+ * No permite saltarse a un jefe ocupado: todos los puestos entre el puesto del
+ * empleado y el puesto del usuario deben estar sin personal activo.
+ */
+async function canApproveThroughVacancies(user, targetEmployeeId, puestoMap, routeFilterId = null) {
+  if (!user || !targetEmployeeId) return false;
+  if (user.role === 'admin' || user.role === 'manager') return true;
+
+  const [targetRows] = await pool.execute(
+    'SELECT puesto_id FROM empleados WHERE id = ? LIMIT 1',
+    [targetEmployeeId]
+  );
+  if (!targetRows.length) return false;
+
+  let ancestorPuestoId = Number(user.puesto_id);
+
+  // Un Auxiliar de Supervisión asignado como líder de ruta utiliza el árbol
+  // del puesto Supervisor de Sucursal (46), igual que en el dashboard.
+  if (ancestorPuestoId === 45 && routeFilterId !== null && routeFilterId !== undefined) {
+    const userRouteId = await resolveEmployeeRouteId(user.id);
+    if (userRouteId !== Number(routeFilterId)) return false;
+    ancestorPuestoId = 46;
+  }
+
+  const targetPuestoId = Number(targetRows[0].puesto_id);
+  if (!targetPuestoId || targetPuestoId === ancestorPuestoId) return false;
+
+  const path = getPuestoPathToAncestor(targetPuestoId, ancestorPuestoId, puestoMap);
+  if (!path || path.length === 0) return false;
+
+  // El primer elemento es el puesto del empleado objetivo y está ocupado por
+  // definición. Solo deben estar vacantes los puestos intermedios.
+  const intermediatePuestos = path.slice(1);
+  for (const intermediateId of intermediatePuestos) {
+    if (await puestoHasActiveEmployee(intermediateId, routeFilterId)) return false;
+  }
+  return true;
+}
+
+/**
+ * Valida el acceso a un nodo de puesto vacante. Para usuarios operativos, el
+ * puesto solicitado y todos los puestos intermedios deben estar vacantes; de
+ * esa forma no es posible saltarse a un jefe que sí está ocupado.
+ */
+async function canAccessVacantPuestoTree(user, targetPuestoId, puestoMap, routeFilterId = null) {
+  if (!user || !targetPuestoId) return false;
+  if (user.role === 'admin' || user.role === 'manager') return true;
+
+  let ancestorPuestoId = Number(user.puesto_id);
+  if (ancestorPuestoId === 45 && routeFilterId !== null && routeFilterId !== undefined) {
+    const userRouteId = await resolveEmployeeRouteId(user.id);
+    if (userRouteId !== Number(routeFilterId)) return false;
+    ancestorPuestoId = 46;
+  }
+
+  const path = getPuestoPathToAncestor(Number(targetPuestoId), ancestorPuestoId, puestoMap);
+  if (!path || path.length === 0) return false;
+
+  for (const puestoId of path) {
+    if (await puestoHasActiveEmployee(puestoId, routeFilterId)) return false;
+  }
+  return true;
+}
+
 /*
  * Construye de forma recursiva una estructura jerárquica de empleados subordinados
  * a un puesto dado.  Para cada puesto subordinado directo se buscan los
@@ -349,6 +513,15 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
   const nodes = [];
   const empIds = [];
   for (const subPuestoId of directPuestos) {
+    const puestoDef = puestoMap.find(p => Number(p.id) === Number(subPuestoId)) || {
+      id: subPuestoId,
+      nombre: `Puesto ${subPuestoId}`,
+      departamento_nombre: ''
+    };
+    const hasChildren = puestoMap.some(
+      p => p.responde_a_id !== null && p.responde_a_id !== undefined && Number(p.responde_a_id) === Number(subPuestoId)
+    );
+
     // Construir la consulta base para los empleados de este subPuestoId.
     let sql = `SELECT e.id,
               e.incidencia_id,
@@ -387,75 +560,55 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
     }
     const [emps] = await pool.execute(sql, params);
 
-    // Si no hay empleados en este puesto, buscamos en sus puestos hijos para incluirlos
-    // directamente en este nivel.  Esto permite que los colaboradores de las categorías
-    // inferiores aparezcan aunque el puesto intermedio no esté ocupado.
-    let effectiveEmps = emps;
-    if ((!effectiveEmps || effectiveEmps.length === 0) && routeFilterId !== null && routeFilterId !== undefined) {
-      // Obtener puestos hijos
-      const childPuestos = puestoMap
-        .filter(pp => pp.responde_a_id !== null && pp.responde_a_id !== undefined && Number(pp.responde_a_id) === Number(subPuestoId))
-        .map(pp => pp.id);
-      if (childPuestos.length) {
-        effectiveEmps = [];
-        for (const childId of childPuestos) {
-          let childSql = `SELECT e.id,
-                    e.incidencia_id,
-                    e.nombre,
-                    e.puesto_id,
-                    e.departamento_id,
-                    e.sucursal_id,
-                    s.nombre AS sucursal_nombre,
-                    COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) AS ruta_id,
-                    COALESCE(sv.nombre, r.nombre) AS ruta_nombre,
-                    p.nombre AS puesto_nombre,
-                    d.nombre AS departamento_nombre
-             FROM empleados e
-             LEFT JOIN sucursales s ON s.id = e.sucursal_id
-             LEFT JOIN empleado_supervision_ruta esr ON esr.empleado_id = e.id AND esr.activo = 1
-             LEFT JOIN puestos p ON e.puesto_id = p.id
-             LEFT JOIN departamentos d ON e.departamento_id = d.id
-             LEFT JOIN supervision_rutas sd ON UPPER(TRIM(sd.nombre)) = UPPER(TRIM(d.nombre))
-             LEFT JOIN supervision_rutas sv ON sv.nombre = s.nombre
-             LEFT JOIN sucursal_supervision_ruta sr ON sr.sucursal_id = s.id AND sr.activo = 1
-             -- Igualmente, para los puestos hijos utilizamos la misma lógica de ruta: manual (esr), departamento (sd), virtual (sv) o real (sr)
-             LEFT JOIN supervision_rutas r ON r.id = COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id)
-             WHERE e.puesto_id = ? `;
-          if (!showBajas) {
-            childSql += "AND (d.nombre IS NULL OR d.nombre <> 'BAJA') ";
-          }
-          const childParams = [childId];
-          // Filtro de ruta para hijos: mismos criterios que arriba, sin incluir empleados sin sucursal de otras rutas
-          childSql += "AND COALESCE(esr.ruta_id, sd.id, sv.id, sr.ruta_id) = ? ";
-          childParams.push(routeFilterId);
-          const [childRows] = await pool.execute(childSql, childParams);
-          if (childRows && childRows.length) {
-            effectiveEmps.push(...childRows);
-          }
-        }
+    // Si el puesto no está ocupado, conservar el puesto como nodo vacante en
+    // lugar de cortar o aplanar la cadena. Solo se muestra cuando tiene puestos
+    // subordinados, porque es ahí donde la vacante afecta la navegación.
+    if (!emps || emps.length === 0) {
+      if (hasChildren) {
+        nodes.push({
+          vacante: true,
+          puesto: {
+            id: Number(puestoDef.id),
+            nombre: puestoDef.nombre || `Puesto ${subPuestoId}`,
+            departamento_id: puestoDef.departamento_id || null,
+            departamento_nombre: puestoDef.departamento_nombre || ''
+          },
+          hasChildren: true,
+          routeFilterId: (routeFilterId !== null && routeFilterId !== undefined) ? Number(routeFilterId) : null
+        });
       }
+      continue;
     }
 
-    // Agregar empleados efectivos al arreglo de nodos
-    if (effectiveEmps && effectiveEmps.length) {
-      for (const emp of effectiveEmps) {
-        // Obtener los KPIs de este colaborador aplicando la regla de sucursal virtual
-        const subKpis = await getKPIsForEmployee(emp.id, getKPIsByPosition);
-        const subRes = await getKpiResultsForEmployee(emp.id, year);
-        const hasChildren = puestoMap.some(p => p.responde_a_id === emp.puesto_id);
-        let canApprove = await isDirectBossByPuesto(currentUser, emp.id);
-        // Si un Auxiliar de Supervisión (puesto 45) está fungiendo como líder de ruta,
-        // permitimos aprobar/enviar a revisión dentro de su ruta aunque su puesto no tenga colgantes.
-        if (!canApprove && Number(currentUser.puesto_id) === 45 && routeFilterId !== null) {
-          const empRuta = emp.ruta_id !== null ? Number(emp.ruta_id) : null;
-          if (empRuta !== null && empRuta === Number(routeFilterId)) {
-            canApprove = true;
-          }
-        }
-        const canSendToReview = await canAccessEmployeeTree(currentUser, emp.id);
-        nodes.push({ empleado: emp, kpis: subKpis, resultados: subRes, hasChildren, feedback: null, canApprove, canSendToReview });
-        empIds.push(emp.id);
+    // Agregar empleados ocupantes del puesto al arreglo de nodos.
+    for (const emp of emps) {
+      // Obtener los KPIs de este colaborador aplicando la regla de sucursal virtual
+      const subKpis = await getKPIsForEmployee(emp.id, getKPIsByPosition);
+      const subRes = await getKpiResultsForEmployee(emp.id, year);
+      let canApprove = await isDirectBossByPuesto(currentUser, emp.id);
+      if (!canApprove) {
+        canApprove = await canApproveThroughVacancies(currentUser, emp.id, puestoMap, routeFilterId);
       }
+      // Si un Auxiliar de Supervisión (puesto 45) está fungiendo como líder de ruta,
+      // permitimos aprobar/enviar a revisión dentro de su ruta aunque su puesto no tenga colgantes.
+      if (!canApprove && Number(currentUser.puesto_id) === 45 && routeFilterId !== null) {
+        const empRuta = emp.ruta_id !== null ? Number(emp.ruta_id) : null;
+        if (empRuta !== null && empRuta === Number(routeFilterId)) {
+          canApprove = true;
+        }
+      }
+      const canSendToReview = await canAccessEmployeeTree(currentUser, emp.id);
+      nodes.push({
+        empleado: emp,
+        kpis: subKpis,
+        resultados: subRes,
+        hasChildren,
+        feedback: null,
+        canApprove,
+        canSendToReview,
+        routeFilterId: (routeFilterId !== null && routeFilterId !== undefined) ? Number(routeFilterId) : null
+      });
+      empIds.push(emp.id);
     }
   }
 
@@ -476,11 +629,13 @@ async function buildDirectSubordinateNodes(currentUser, puestoId, puestoMap, yea
         compromisos: r.compromisos || ''
       }));
       nodes.forEach(n => {
+        if (n.vacante || !n.empleado) return;
         n.feedback = fMap.get(n.empleado.id) || { fortalezas: '', oportunidades: '', compromisos: '' };
       });
     } catch (e) {
       // tabla no existe o error: dejar feedback vacío sin romper
       nodes.forEach(n => {
+        if (n.vacante || !n.empleado) return;
         n.feedback = { fortalezas: '', oportunidades: '', compromisos: '' };
       });
     }
@@ -683,8 +838,14 @@ router.get('/', isAuth, async (req, res) => {
     } catch (err) {
       console.error('No se pudo determinar ruta del usuario:', err);
     }
-    // Cargar el mapa de puestos (id, responde_a_id) para construir el árbol de subordinados
-    const [puestos] = await pool.execute('SELECT id, responde_a_id FROM puestos');
+    // Cargar el mapa completo de puestos para construir el árbol y poder
+    // representar puestos vacantes con su nombre y departamento.
+    const [puestos] = await pool.execute(
+      `SELECT p.id, p.nombre, p.responde_a_id, p.departamento_id,
+              d.nombre AS departamento_nombre
+       FROM puestos p
+       LEFT JOIN departamentos d ON d.id = p.departamento_id`
+    );
 
     // ---------------------------------------------------------------------
     // IMPORTANTE:
@@ -725,7 +886,7 @@ router.get('/', isAuth, async (req, res) => {
     let subordinatesWithChildren = [];
     if (Array.isArray(subordinateTree)) {
       subordinatesWithChildren = subordinateTree
-        .filter(node => node && node.hasChildren)
+        .filter(node => node && !node.vacante && node.empleado && node.hasChildren)
         .map(node => ({ id: node.empleado.id, nombre: node.empleado.nombre }));
     }
     // Reglas de aprobación: el usuario NO puede aprobarse a sí mismo si tiene jefe directo.
@@ -810,8 +971,13 @@ router.get('/subtree/:empleadoId', isAuth, async (req, res) => {
     const targetSucursalNombre = empRows[0].sucursal_nombre || '';
     const targetRutaId = (empRows[0].ruta_id !== null && empRows[0].ruta_id !== undefined) ? Number(empRows[0].ruta_id) : null;
 
-    // Cargar mapa de puestos (id, responde_a_id)
-    const [puestos] = await pool.execute('SELECT id, responde_a_id FROM puestos');
+    // Cargar mapa completo de puestos para poder crear nodos vacantes.
+    const [puestos] = await pool.execute(
+      `SELECT p.id, p.nombre, p.responde_a_id, p.departamento_id,
+              d.nombre AS departamento_nombre
+       FROM puestos p
+       LEFT JOIN departamentos d ON d.id = p.departamento_id`
+    );
 
     // El filtro por ruta y el agrupado por sucursal SOLO aplica cuando el nodo padre
     // es un líder de ruta (Supervisor 46 o Auxiliar 45 asignado a sucursal virtual).
@@ -840,11 +1006,93 @@ router.get('/subtree/:empleadoId', isAuth, async (req, res) => {
       showBajas,
       groupBySucursal,
       parentEmpleadoId: empleadoId,
+      parentPuestoId: null,
+      parentContainerId: null,
       layout: false
     });
   } catch (err) {
     console.error('Error al cargar subtree:', err);
     return res.status(500).send('Error al cargar nivel');
+  }
+});
+
+/**
+ * GET /dashboard/subtree/puesto/:puestoId
+ *
+ * Carga el siguiente nivel debajo de un puesto que actualmente no tiene
+ * personal asignado. Mantiene la estructura del organigrama sin obligar a
+ * colgar temporalmente los puestos inferiores de un jefe distinto.
+ */
+router.get('/subtree/puesto/:puestoId', isAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const puestoId = parseInt(req.params.puestoId, 10);
+    const def = getDefaultPeriod();
+    let year = parseInt(req.query.anio, 10);
+    let month = parseInt(req.query.mes, 10);
+    const showBajas = String(req.query.showBajas || '') === '1';
+    const routeFilterIdRaw = req.query.rutaId;
+    const contextRaw = String(req.query.ctx || '').trim();
+    const parentContainerId = contextRaw
+      ? contextRaw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 150)
+      : '';
+    const routeFilterId = (routeFilterIdRaw !== undefined && routeFilterIdRaw !== null && String(routeFilterIdRaw).trim() !== '')
+      ? parseInt(routeFilterIdRaw, 10)
+      : null;
+
+    if (!year || isNaN(year)) year = def.year;
+    if (!month || isNaN(month) || month < 1 || month > 12) month = def.month;
+    if (!puestoId || isNaN(puestoId)) return res.status(400).send('Puesto inválido');
+    if (routeFilterId !== null && (!routeFilterId || isNaN(routeFilterId))) {
+      return res.status(400).send('Ruta inválida');
+    }
+
+    const [puestos] = await pool.execute(
+      `SELECT p.id, p.nombre, p.responde_a_id, p.departamento_id,
+              d.nombre AS departamento_nombre
+       FROM puestos p
+       LEFT JOIN departamentos d ON d.id = p.departamento_id`
+    );
+    const targetPuesto = puestos.find(p => Number(p.id) === Number(puestoId));
+    if (!targetPuesto) return res.status(404).send('Puesto no encontrado');
+
+    const allowed = await canAccessVacantPuestoTree(user, puestoId, puestos, routeFilterId);
+    if (!allowed) return res.status(403).send('Sin permisos para consultar este puesto vacante');
+
+    // Si mientras la pantalla estaba abierta alguien ocupó el puesto, evitamos
+    // usar la ruta de vacante con información obsoleta y pedimos recargar.
+    if (await puestoHasActiveEmployee(puestoId, routeFilterId)) {
+      return res.status(409).send('El puesto ya tiene personal asignado. Recarga la pantalla.');
+    }
+
+    const nodes = await buildDirectSubordinateNodes(
+      user,
+      puestoId,
+      puestos,
+      year,
+      month,
+      showBajas,
+      routeFilterId
+    );
+
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+
+    return res.render('partials/sub_kpi_level', {
+      nodes,
+      selectedYear: year,
+      selectedMonth: month,
+      showBajas,
+      groupBySucursal: routeFilterId !== null,
+      parentEmpleadoId: null,
+      parentPuestoId: puestoId,
+      parentContainerId,
+      layout: false
+    });
+  } catch (err) {
+    console.error('Error al cargar subtree de puesto vacante:', err);
+    return res.status(500).send('Error al cargar el nivel del puesto vacante');
   }
 });
 
@@ -1263,10 +1511,20 @@ router.post('/visto', isAuth, async (req, res) => {
         canApprove = true;
       } else {
         canApprove = await isDirectBossByPuesto(user, targetEmployeeId);
+        if (!canApprove) {
+          const [puestos] = await pool.execute('SELECT id, responde_a_id FROM puestos');
+          const targetRouteId = await resolveEmployeeRouteId(targetEmployeeId);
+          canApprove = await canApproveThroughVacancies(
+            user,
+            targetEmployeeId,
+            puestos,
+            targetRouteId
+          );
+        }
       }
     }
     if (!canApprove) {
-      const msg = 'No tiene permisos para aprobar. Solo el jefe directo puede aprobar (o el empleado si no tiene jefe directo).';
+      const msg = 'No tiene permisos para aprobar. Puede aprobar el jefe directo o el jefe superior cuando todos los puestos intermedios están vacantes.';
       if ((req.get('X-Requested-With') || '').toLowerCase() === 'fetch') {
         return res.status(403).json({ ok: false, error: msg });
       }
@@ -3002,6 +3260,8 @@ router.buildEmployeeWorkbook = buildEmployeeWorkbook;
 router.buildTeamWorkbook = buildTeamWorkbook;
 router.getDefaultPeriod = getDefaultPeriod;
 router.buildSubordinatePuestoIds = buildSubordinatePuestoIds;
+router.getPuestoPathToAncestor = getPuestoPathToAncestor;
+router.buildDirectSubordinateNodes = buildDirectSubordinateNodes;
 
 
 module.exports = router;

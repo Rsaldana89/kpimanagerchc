@@ -656,6 +656,47 @@
       }
     }
 
+    async function loadNextPositionLevel(puestoId, routeId = '', force = false, targetId = '') {
+      const resolvedTargetId = targetId || ('subtree-puesto-' + puestoId);
+      const container = document.getElementById(resolvedTargetId);
+      const btn = document.querySelector(`[data-subtree-puesto-btn][data-target-id="${resolvedTargetId}"]`);
+      if (!container) return;
+
+      if (container.dataset.loaded === '1' && !force) {
+        const willShow = (container.style.display === 'none' || container.style.display === '');
+        container.style.display = willShow ? 'block' : 'none';
+        if (btn) btn.textContent = willShow ? '▾ Contraer nivel inferior' : '▸ Desplegar nivel inferior';
+        return;
+      }
+
+      container.style.display = 'block';
+      container.innerHTML = '<div class="text-muted small">Cargando estructura...</div>';
+
+      try {
+        const ts = Date.now();
+        const routeParam = routeId !== null && routeId !== undefined && String(routeId).trim() !== ''
+          ? `&rutaId=${encodeURIComponent(routeId)}`
+          : '';
+        const contextParam = `&ctx=${encodeURIComponent(resolvedTargetId)}`;
+        const url = `/dashboard/subtree/puesto/${puestoId}?anio=${_selectedYear}&mes=${_selectedMonth}&showBajas=${_includeBajas}${routeParam}${contextParam}&_ts=${ts}`;
+        const resp = await fetch(url, {
+          headers: { 'X-Requested-With': 'fetch' },
+          cache: 'no-store'
+        });
+        if (!resp.ok) {
+          const msg = await resp.text();
+          container.innerHTML = `<div class="text-danger small">${msg || 'No se pudo cargar el nivel del puesto.'}</div>`;
+          return;
+        }
+        container.innerHTML = await resp.text();
+        container.dataset.loaded = '1';
+        if (btn) btn.textContent = '▾ Contraer nivel inferior';
+        applyTeamFilter();
+      } catch (e) {
+        container.innerHTML = '<div class="text-danger small">Error de red al cargar la estructura del puesto.</div>';
+      }
+    }
+
     // Un solo listener por delegación (funciona también para contenido cargado por AJAX)
     document.addEventListener('click', function(e){
       const btn = e.target.closest('[data-subtree-btn]');
@@ -664,6 +705,19 @@
       const empId = btn.dataset.empId;
       if (!empId) return;
       loadNextLevel(empId);
+    });
+
+    // Puestos vacantes: carga los puestos subordinados sin necesitar un
+    // empleado intermedio. Funciona también para niveles insertados por AJAX.
+    document.addEventListener('click', function(e){
+      const btn = e.target.closest('[data-subtree-puesto-btn]');
+      if (!btn) return;
+      e.preventDefault();
+      const puestoId = btn.dataset.puestoId;
+      const routeId = btn.dataset.routeId || '';
+      const targetId = btn.dataset.targetId || '';
+      if (!puestoId) return;
+      loadNextPositionLevel(puestoId, routeId, false, targetId);
     });
 
     // En vista agrupada por sucursal (líder de ruta), el botón ▸/▾ del encabezado
@@ -678,8 +732,11 @@
       e.stopPropagation();
 
       const parentEmpId = cbtn.getAttribute('data-parent-emp-id');
+      const parentPuestoId = cbtn.getAttribute('data-parent-puesto-id');
+      const parentContainerId = cbtn.getAttribute('data-parent-container-id') || '';
+      const routeId = cbtn.getAttribute('data-route-id') || '';
       const collapseId = cbtn.getAttribute('data-collapse-id');
-      if (!parentEmpId || !collapseId) return;
+      if ((!parentEmpId && !parentPuestoId) || !collapseId) return;
 
       // Si ya está abierto el collapse, solo cerrar (sin recargar)
       const currentTarget = document.getElementById(collapseId);
@@ -694,7 +751,11 @@
       }
 
       try {
-        await loadNextLevel(parentEmpId, true);
+        if (parentEmpId) {
+          await loadNextLevel(parentEmpId, true);
+        } else {
+          await loadNextPositionLevel(parentPuestoId, routeId, true, parentContainerId);
+        }
       } catch (err) {
         console.error('Error recargando sucursal virtual:', err);
       }
