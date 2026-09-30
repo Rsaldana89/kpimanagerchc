@@ -1,0 +1,59 @@
+<%- include('partials/header'); %>
+<%
+  const fmt = d => { if(!d)return ''; const x=new Date(d); return isNaN(x)?'':x.toLocaleString('es-MX'); };
+  const monthLabel = m => MONTHS[(Number(m)||1)-1] || `Mes ${m}`;
+%>
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+  <div><h1 class="h3 mb-1"><i class="bi bi-clock-history me-2"></i>Históricos de KPI</h1><div class="text-muted">Snapshots inmutables de periodos cerrados e históricos importados.</div></div>
+  <% if (period) { %><a class="btn btn-outline-secondary" href="/admin/historicos"><i class="bi bi-arrow-left"></i> Volver</a><% } %>
+</div>
+
+<% if (!period) { %>
+<div class="card mb-4"><div class="card-body">
+  <h2 class="h5">Importar histórico</h2>
+  <p class="text-muted small mb-3">Solo .xlsx, máximo 15 MB. Primero analiza; el servidor vuelve a validar al importar.</p>
+  <form id="historyImportForm" method="POST" action="/admin/historicos/import" enctype="multipart/form-data">
+    <div class="row g-2 align-items-end"><div class="col-lg-7"><label class="form-label">Archivo</label><input class="form-control" type="file" id="historyFile" name="archivo" accept=".xlsx" required></div><div class="col-lg-3"><button class="btn btn-outline-primary w-100" type="button" id="analyzeBtn"><i class="bi bi-search"></i> Analizar archivo</button></div></div>
+    <div id="previewBox" class="mt-3 d-none"></div>
+    <input type="hidden" name="asNewVersion" id="asNewVersion" value="0">
+    <button class="btn btn-primary mt-3 d-none" type="submit" id="importBtn"><i class="bi bi-database-add"></i> Importar histórico</button>
+  </form>
+</div></div>
+
+<div class="card mb-4"><div class="card-body"><form method="GET" class="row g-2 align-items-end"><div class="col-md-3"><label class="form-label">Año</label><input type="number" class="form-control" name="anio" min="2000" max="2100" value="<%= selectedYear || '' %>"></div><div class="col-md-3"><label class="form-label">Mes</label><select class="form-select" name="mes"><option value="">Todos</option><% MONTHS.forEach((m,i)=>{ %><option value="<%= i+1 %>" <%= Number(selectedMonth)===i+1?'selected':'' %>><%= m %></option><% }); %></select></div><div class="col-md-3"><button class="btn btn-outline-secondary w-100">Filtrar</button></div></form></div></div>
+
+<div class="card"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>Periodo</th><th>Origen</th><th>Versión</th><th>Snapshot / importación</th><th>Colaboradores</th><th>Filas KPI</th><th>Creado por</th><th>Estado</th><th></th></tr></thead><tbody>
+<% if (!periods.length) { %><tr><td colspan="9" class="text-center text-muted py-4">No hay históricos disponibles.</td></tr><% } %>
+<% periods.forEach(p=>{ %><tr><td><strong><%= monthLabel(p.mes) %> <%= p.anio %></strong></td><td><span class="badge text-bg-<%= p.origen==='SYSTEM_CLOSE'?'primary':'info' %>"><%= p.origen==='SYSTEM_CLOSE'?'Sistema':'Excel importado' %></span></td><td>v<%= p.version %></td><td><%= fmt(p.snapshot_el || p.created_at) %></td><td><%= p.empleados_total %></td><td><%= Number(p.filas_kpi_total||0).toLocaleString('es-MX') %></td><td><%= p.creado_por_nombre || '—' %></td><td><span class="badge text-bg-<%= Number(p.es_actual)===1?'success':'secondary' %>"><%= Number(p.es_actual)===1?'Actual':'Versión anterior' %></span></td><td><a class="btn btn-sm btn-outline-primary" href="/admin/historicos/periodo/<%= p.id %>">Ver</a></td></tr><% }); %>
+</tbody></table></div></div>
+<% } else { %>
+<div class="card mb-3"><div class="card-body"><div class="d-flex justify-content-between flex-wrap gap-3"><div><h2 class="h4 mb-1"><%= monthLabel(period.mes) %> <%= period.anio %> · v<%= period.version %></h2><div class="text-muted"><%= period.origen==='SYSTEM_CLOSE'?'Generado al cierre oficial':'Importado desde Excel' %> · <%= fmt(period.snapshot_el || period.created_at) %></div></div><div><a class="btn btn-success" href="/admin/historicos/periodo/<%= period.id %>/export"><i class="bi bi-file-earmark-excel"></i> Exportar Excel</a></div></div><div class="row g-2 mt-2"><div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Colaboradores</div><strong><%= period.empleados_total %></strong></div></div><div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Filas KPI</div><strong><%= Number(period.filas_kpi_total||0).toLocaleString('es-MX') %></strong></div></div><div class="col-md-4"><div class="border rounded p-2"><div class="small text-muted">Origen / estado</div><strong><%= period.origen %> · <%= Number(period.es_actual)===1?'Actual':'Superado' %></strong></div></div></div></div></div>
+
+<div class="card mb-3"><div class="card-body"><form method="GET" class="row g-2 align-items-end"><div class="col-lg-3"><label class="form-label">Buscar</label><input class="form-control" name="buscar" value="<%= query.search || '' %>" placeholder="Nombre o No. empleado"></div><div class="col-lg-3"><label class="form-label">Puesto</label><select class="form-select" name="puesto"><option value="">Todos</option><% filters.puestos.forEach(v=>{ %><option <%= query.puesto===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><label class="form-label">Departamento</label><select class="form-select" name="departamento"><option value="">Todos</option><% filters.departamentos.forEach(v=>{ %><option <%= query.departamento===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><label class="form-label">Sucursal</label><select class="form-select" name="sucursal"><option value="">Todas</option><% filters.sucursales.forEach(v=>{ %><option <%= query.sucursal===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><button class="btn btn-outline-secondary w-100">Filtrar</button></div></form></div></div>
+
+<div class="card mb-3"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>No. empleado</th><th>Empleado</th><th>Puesto histórico</th><th>Departamento</th><th>Sucursal</th><th>KPI con resultado</th><th>KPI totales</th><th>Puntaje acum.</th><th></th></tr></thead><tbody><% employees.forEach(e=>{ %><tr><td><%= e.no_empleado %></td><td><strong><%= e.empleado_nombre %></strong></td><td><%= e.puesto_nombre || '' %></td><td><%= e.departamento_nombre || '' %></td><td><%= e.sucursal_nombre || '' %></td><td><%= e.kpi_capturados %></td><td><%= e.kpi_totales %></td><td><%= e.puntaje_total %></td><td><a class="btn btn-sm btn-outline-primary" href="?empleado=<%= encodeURIComponent(e.no_empleado) %>">Ver detalle</a></td></tr><% }); %></tbody></table></div></div>
+
+<% if (employeeDetail && employeeDetail.details.length) { const info=employeeDetail.details[0]; %>
+<div class="card mb-4"><div class="card-body"><h3 class="h5">Información histórica · <%= info.empleado_nombre %></h3><div class="row small mb-3"><div class="col-md-3"><strong>No. empleado:</strong> <%= info.no_empleado %></div><div class="col-md-3"><strong>Puesto:</strong> <%= info.puesto_nombre || '' %></div><div class="col-md-3"><strong>Departamento:</strong> <%= info.departamento_nombre || '' %></div><div class="col-md-3"><strong>Sucursal:</strong> <%= info.sucursal_nombre || '' %></div></div><div class="table-responsive"><table class="table table-sm table-bordered align-middle"><thead class="table-light"><tr><th>KPI</th><th>Objetivo</th><th>Unidad</th><th>Resultado</th><th>Semáforo</th><th>Puntaje base</th><th>Peso</th><th>Ponderado</th><th>Estado</th><th>Aprobado por</th><th>Fecha aprobación</th><th>En revisión por</th><th>Fecha revisión</th><th>Motivo</th><th>Comentario</th></tr></thead><tbody><% employeeDetail.details.forEach(d=>{ %><tr><td><%= d.kpi_nombre || '' %></td><td><%= d.objetivo || '' %></td><td><%= d.unidad || '' %></td><td><%= d.resultado ?? '' %></td><td><%= d.semaforo || '' %></td><td><%= d.puntaje_base ?? '' %></td><td><%= d.peso ?? '' %></td><td><%= d.puntaje_ponderado ?? '' %></td><td><%= d.estado || '' %></td><td><%= d.aprobado_por_nombre || '' %></td><td><%= fmt(d.fecha_aprobacion) %></td><td><%= d.revision_por_nombre || '' %></td><td><%= fmt(d.fecha_revision) %></td><td><%= d.motivo_revision || '' %></td><td><%= d.comentario_kpi || '' %></td></tr><% }); %></tbody></table></div><h4 class="h6 mt-3">Retroalimentación</h4><div class="row"><div class="col-md-4"><strong>Fortalezas</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.fortalezas || '—' %></div></div><div class="col-md-4"><strong>Áreas de oportunidad</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.areas_oportunidad || '—' %></div></div><div class="col-md-4"><strong>Compromisos</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.compromisos || '—' %></div></div></div></div></div>
+<% } %>
+<% } %>
+
+<script>
+(() => {
+  const btn=document.getElementById('analyzeBtn'); if(!btn)return;
+  const file=document.getElementById('historyFile'), box=document.getElementById('previewBox'), imp=document.getElementById('importBtn'), asNew=document.getElementById('asNewVersion');
+  btn.addEventListener('click',async()=>{
+    imp.classList.add('d-none'); box.classList.remove('d-none'); box.innerHTML='<div class="alert alert-info">Analizando archivo…</div>'; asNew.value='0';
+    if(!file.files.length){box.innerHTML='<div class="alert alert-warning">Selecciona un archivo .xlsx.</div>';return;}
+    const fd=new FormData(); fd.append('archivo',file.files[0]);
+    try { const r=await fetch('/admin/historicos/import/preview',{method:'POST',body:fd}); const j=await r.json();
+      if(!j.ok){box.innerHTML=`<div class="alert alert-danger"><strong>No se puede importar.</strong><ul class="mb-0">${(j.errors||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`;return;}
+      const s=j.stats||{}, ex=j.existing||{}; let html=`<div class="border rounded p-3"><h3 class="h6">${esc(j.monthName)} ${j.year}</h3><div class="row g-2 small"><div class="col-md-3"><strong>Colaboradores:</strong> ${s.employees}</div><div class="col-md-3"><strong>Filas KPI:</strong> ${s.rows}</div><div class="col-md-3"><strong>Resultados capturados:</strong> ${s.captured}</div><div class="col-md-3"><strong>Retroalimentaciones con contenido:</strong> ${s.feedbackWithContent}</div></div><div class="small mt-2"><strong>Estado:</strong> ${s.stateCounts?.aprobado||0} aprobados · ${s.stateCounts?.revision||0} en revisión · ${s.stateCounts?.abierto||0} abiertos</div>`;
+      if((j.warnings||[]).length)html+=`<div class="alert alert-warning mt-3 mb-0"><strong>Advertencias:</strong><ul class="mb-0">${j.warnings.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`;
+      if(ex.sameHash)html+=`<div class="alert alert-danger mt-3 mb-0">Este mismo archivo ya fue importado.</div>`; else if(ex.hasCurrent){asNew.value='1';html+=`<div class="alert alert-info mt-3 mb-0">Este periodo ya cuenta con un histórico actual. La confirmación importará el archivo como <strong>nueva versión</strong>; la versión anterior no se borrará.</div>`;} html+='</div>'; box.innerHTML=html; if(!ex.sameHash)imp.classList.remove('d-none');
+    } catch(e){box.innerHTML='<div class="alert alert-danger">No fue posible analizar el archivo.</div>';}
+  });
+  function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+})();
+</script>
+<%- include('partials/footer'); %>

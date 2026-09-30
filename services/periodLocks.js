@@ -262,33 +262,67 @@ async function reopenSnapshot({ year, month }) {
 }
 
 async function closePeriod({ year, month, userId = null }) {
-  const snapMeta = await getSnapshotMeta({ year, month });
-  const snapshotAt = snapMeta.snapshot_at || null;
-  await pool.execute(
-    `INSERT INTO kpi_periodo_cierres (anio, mes, cerrado, snapshot_el, cerrado_por, cerrado_el, reabierto_por, reabierto_el)
-     VALUES (?, ?, 1, ?, ?, NOW(), NULL, NULL)
-     ON DUPLICATE KEY UPDATE
-       cerrado = 1,
-       snapshot_el = COALESCE(snapshot_el, VALUES(snapshot_el)),
-       cerrado_por = VALUES(cerrado_por),
-       cerrado_el = NOW(),
-       reabierto_por = NULL,
-       reabierto_el = NULL`,
-    [year, month, snapshotAt, userId]
-  );
-  return { count: snapMeta.total, skipped: !snapMeta.has_snapshot, snapshot_at: snapshotAt };
+  // El snapshot de personal sigue siendo el mecanismo existente. Si no existe,
+  // se asegura antes de iniciar la transacción del cierre/histórico final.
+  let snapMeta = await getSnapshotMeta({ year, month });
+  if (!snapMeta.has_snapshot) {
+    await ensurePeriodSnapshot({ year, month, replaceExisting: false });
+    snapMeta = await getSnapshotMeta({ year, month });
+  }
+  if (!snapMeta.has_snapshot) {
+    throw new Error('No fue posible generar la base de personal del periodo.');
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { createSystemHistoryWithConnection } = require('./historicosService');
+    const history = await createSystemHistoryWithConnection(conn, { year, month, userId });
+    const snapshotAt = snapMeta.snapshot_at || null;
+    await conn.execute(
+      `INSERT INTO kpi_periodo_cierres (anio, mes, cerrado, snapshot_el, cerrado_por, cerrado_el, reabierto_por, reabierto_el)
+       VALUES (?, ?, 1, ?, ?, NOW(), NULL, NULL)
+       ON DUPLICATE KEY UPDATE
+         cerrado = 1,
+         snapshot_el = COALESCE(snapshot_el, VALUES(snapshot_el)),
+         cerrado_por = VALUES(cerrado_por),
+         cerrado_el = NOW(),
+         reabierto_por = NULL,
+         reabierto_el = NULL`,
+      [year, month, snapshotAt, userId]
+    );
+    await conn.commit();
+    return { count: snapMeta.total, snapshot_at: snapshotAt, history };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 }
 
 async function reopenPeriod({ year, month, userId = null }) {
-  await pool.execute(
-    `INSERT INTO kpi_periodo_cierres (anio, mes, cerrado, reabierto_por, reabierto_el)
-     VALUES (?, ?, 0, ?, NOW())
-     ON DUPLICATE KEY UPDATE
-       cerrado = 0,
-       reabierto_por = VALUES(reabierto_por),
-       reabierto_el = NOW()`,
-    [year, month, userId]
-  );
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { supersedeHistoryForReopenWithConnection } = require('./historicosService');
+    await supersedeHistoryForReopenWithConnection(conn, { year, month });
+    await conn.execute(
+      `INSERT INTO kpi_periodo_cierres (anio, mes, cerrado, reabierto_por, reabierto_el)
+       VALUES (?, ?, 0, ?, NOW())
+       ON DUPLICATE KEY UPDATE
+         cerrado = 0,
+         reabierto_por = VALUES(reabierto_por),
+         reabierto_el = NOW()`,
+      [year, month, userId]
+    );
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
 }
 
 async function isPeriodManuallyClosed({ year, month }) {

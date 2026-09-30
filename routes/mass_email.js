@@ -3,6 +3,7 @@ const router = express.Router();
 const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
+const { logKpiManager } = require('../utils/logkpimanager');
 const { startBatch, cancelBatch, isRunning: isBatchRunning, getSendDelayMs } = require('../services/batchEmailRunner');
 const {
   fetchLiveEmployeeBase,
@@ -375,14 +376,17 @@ router.post('/admin/mass-email/close-period', isAuth, requireRole(['admin']), as
     const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
     const userId = req.session && req.session.user ? req.session.user.id : null;
     const snap = await closePeriod({ year, month, userId });
-    if (snap && snap.snapshot_at) {
-      req.flash('info', `Periodo ${month}/${year} cerrado correctamente. Se respetará el snapshot automático del fin de mes (${snap.count || 0} empleados).`);
-    } else {
-      req.flash('info', `Periodo ${month}/${year} cerrado correctamente. Aún no hay snapshot del fin de mes para este periodo.`);
+    const monthNames = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    const h = snap && snap.history ? snap.history : null;
+    req.flash('info', h
+      ? `Periodo ${monthNames[month - 1]} ${year} cerrado correctamente. Histórico v${h.version} generado: ${h.employees} colaboradores y ${Number(h.rows || 0).toLocaleString('es-MX')} registros KPI.`
+      : `Periodo ${month}/${year} cerrado correctamente.`);
+    if (h) {
+      await logKpiManager(req, { accion: 'HISTORY_SNAPSHOT_CREATE', entidad: 'kpi_historico_periodos', entidad_id: h.id, descripcion: 'Histórico generado al cierre oficial', detalle: { anio: year, mes: month, version: h.version, empleados: h.employees, filas_kpi: h.rows } });
     }
   } catch (err) {
     console.error('[MassEmail] Error cerrando periodo:', err);
-    req.flash('error', 'No se pudo cerrar el periodo ni generar el snapshot.');
+    req.flash('error', 'No se pudo cerrar el periodo porque no fue posible generar el histórico completo. No se realizaron cambios.');
   }
   return res.redirect(`/admin/mass-email?anio=${req.body.anio || ''}&mes=${req.body.mes || ''}`);
 });
@@ -421,6 +425,7 @@ router.post('/admin/mass-email/reopen-period', isAuth, requireRole(['admin']), a
     const month = clampInt(req.body.mes, 1, 12, defaultPrevMonth().month);
     const userId = req.session && req.session.user ? req.session.user.id : null;
     await reopenPeriod({ year, month, userId });
+    await logKpiManager(req, { accion: 'HISTORY_SUPERSEDE', entidad: 'kpi_historico_periodos', descripcion: 'Histórico actual marcado como superado por reapertura de periodo', detalle: { anio: year, mes: month, reason: 'PERIODO_REABIERTO' } });
     req.flash('info', `Periodo ${month}/${year} reabierto correctamente.`);
   } catch (err) {
     console.error('[MassEmail] Error reabriendo periodo:', err);

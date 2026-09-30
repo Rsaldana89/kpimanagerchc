@@ -61,6 +61,7 @@ const branchRoutes = require('./routes/branches');
 const massEmailRoutes = require('./routes/mass_email');
 const supervisionRoutes = require('./routes/supervision');
 const supervisionToolsRoutes = require('./routes/supervision_tools');
+const historicosRoutes = require('./routes/historicos');
 // API de supervisión (administración de rutas y asignaciones)
 const supervisionApiRoutes = require('./routes/supervision_api');
 
@@ -99,6 +100,8 @@ app.use('/api/supervision', supervisionApiRoutes);
 // Rutas de administración para herramientas de supervisión
 // Montar en raíz para exponer /admin/supervision y subrutas
 app.use('/', supervisionToolsRoutes);
+// Modulo de historicos KPI (solo administradores)
+app.use('/', historicosRoutes);
 
 // Ruta por defecto: redirige a dashboard si autenticado o a login.
 app.get('*', (req, res) => {
