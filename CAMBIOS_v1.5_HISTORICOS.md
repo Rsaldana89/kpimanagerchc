@@ -128,3 +128,11 @@ No se ejecuto una prueba de integracion contra la base MySQL productiva ni se ap
 
 ## Confirmacion de seguridad estructural
 No se sobrescribio ni rediseño ninguna tabla operativa existente. El modulo escribe los historicos exclusivamente en tablas nuevas `kpi_historico_*`; el unico cambio sobre la operacion normal es la coordinacion transaccional del cierre/reapertura ya existentes.
+
+## Ajuste de interfaz - detalle histórico flotante
+
+- El botón **Ver detalle** ya no recarga la página ni coloca el detalle debajo de toda la tabla de colaboradores.
+- El detalle se consulta bajo demanda mediante una ruta admin de solo lectura y se presenta en un **modal flotante** de Bootstrap.
+- El modal es amplio, tiene scroll propio y mantiene visible el encabezado de la tabla de KPI al desplazarse.
+- Al cerrarlo, el administrador permanece exactamente en la misma posición de la lista y conserva los filtros aplicados.
+- No se modificó ninguna tabla ni la lógica de generación/importación de históricos para este ajuste.

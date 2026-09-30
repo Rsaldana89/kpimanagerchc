@@ -37,9 +37,25 @@ router.get('/admin/historicos/periodo/:id', ...admin, async (req,res)=>{
     const id=Number(req.params.id); const period=await getPeriod(id); if(!period)return res.status(404).send('Histórico no encontrado');
     const query={search:String(req.query.buscar||'').trim(),puesto:String(req.query.puesto||'').trim(),departamento:String(req.query.departamento||'').trim(),sucursal:String(req.query.sucursal||'').trim()};
     const [periods,employees,filters]=await Promise.all([listPeriods(),getEmployeeSummary(id,query),getFilters(id)]);
-    let employeeDetail=null; const emp=String(req.query.empleado||'').trim(); if(emp)employeeDetail=await getEmployeeDetail(id,emp);
-    res.render('admin_historicos',{title:'Históricos',periods,selectedYear:null,selectedMonth:null,MONTHS,period,employees,filters,employeeDetail,query});
+    res.render('admin_historicos',{title:'Históricos',periods,selectedYear:null,selectedMonth:null,MONTHS,period,employees,filters,employeeDetail:null,query});
   }catch(e){ console.error('[Historicos] periodo',e); req.flash('error','No se pudo consultar el histórico.'); res.redirect('/admin/historicos'); }
+});
+
+router.get('/admin/historicos/periodo/:id/empleado/:noEmpleado', ...admin, async (req,res)=>{
+  try{
+    const id=Number(req.params.id);
+    if(!Number.isInteger(id)||id<=0)return res.status(400).json({ok:false,error:'Histórico inválido.'});
+    const period=await getPeriod(id);
+    if(!period)return res.status(404).json({ok:false,error:'Histórico no encontrado.'});
+    const noEmpleado=String(req.params.noEmpleado||'').trim();
+    if(!noEmpleado)return res.status(400).json({ok:false,error:'Empleado inválido.'});
+    const detail=await getEmployeeDetail(id,noEmpleado);
+    if(!detail.details.length)return res.status(404).json({ok:false,error:'No se encontró información histórica para este empleado.'});
+    return res.json({ok:true,detail});
+  }catch(e){
+    console.error('[Historicos] detalle empleado',e);
+    return res.status(500).json({ok:false,error:'No se pudo consultar el detalle histórico.'});
+  }
 });
 
 router.post('/admin/historicos/import/preview', ...admin, uploadOne, async (req,res)=>{

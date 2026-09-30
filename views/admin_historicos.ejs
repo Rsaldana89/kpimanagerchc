@@ -31,11 +31,55 @@
 
 <div class="card mb-3"><div class="card-body"><form method="GET" class="row g-2 align-items-end"><div class="col-lg-3"><label class="form-label">Buscar</label><input class="form-control" name="buscar" value="<%= query.search || '' %>" placeholder="Nombre o No. empleado"></div><div class="col-lg-3"><label class="form-label">Puesto</label><select class="form-select" name="puesto"><option value="">Todos</option><% filters.puestos.forEach(v=>{ %><option <%= query.puesto===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><label class="form-label">Departamento</label><select class="form-select" name="departamento"><option value="">Todos</option><% filters.departamentos.forEach(v=>{ %><option <%= query.departamento===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><label class="form-label">Sucursal</label><select class="form-select" name="sucursal"><option value="">Todas</option><% filters.sucursales.forEach(v=>{ %><option <%= query.sucursal===v?'selected':'' %>><%= v %></option><% }); %></select></div><div class="col-lg-2"><button class="btn btn-outline-secondary w-100">Filtrar</button></div></form></div></div>
 
-<div class="card mb-3"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>No. empleado</th><th>Empleado</th><th>Puesto histórico</th><th>Departamento</th><th>Sucursal</th><th>KPI con resultado</th><th>KPI totales</th><th>Puntaje acum.</th><th></th></tr></thead><tbody><% employees.forEach(e=>{ %><tr><td><%= e.no_empleado %></td><td><strong><%= e.empleado_nombre %></strong></td><td><%= e.puesto_nombre || '' %></td><td><%= e.departamento_nombre || '' %></td><td><%= e.sucursal_nombre || '' %></td><td><%= e.kpi_capturados %></td><td><%= e.kpi_totales %></td><td><%= e.puntaje_total %></td><td><a class="btn btn-sm btn-outline-primary" href="?empleado=<%= encodeURIComponent(e.no_empleado) %>">Ver detalle</a></td></tr><% }); %></tbody></table></div></div>
+<div class="card mb-3"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>No. empleado</th><th>Empleado</th><th>Puesto histórico</th><th>Departamento</th><th>Sucursal</th><th>KPI con resultado</th><th>KPI totales</th><th>Puntaje acum.</th><th></th></tr></thead><tbody><% employees.forEach(e=>{ %><tr><td><%= e.no_empleado %></td><td><strong><%= e.empleado_nombre %></strong></td><td><%= e.puesto_nombre || '' %></td><td><%= e.departamento_nombre || '' %></td><td><%= e.sucursal_nombre || '' %></td><td><%= e.kpi_capturados %></td><td><%= e.kpi_totales %></td><td><%= e.puntaje_total %></td><td><button type="button" class="btn btn-sm btn-outline-primary js-history-detail" data-employee="<%= e.no_empleado %>"><i class="bi bi-eye me-1"></i>Ver detalle</button></td></tr><% }); %></tbody></table></div></div>
 
-<% if (employeeDetail && employeeDetail.details.length) { const info=employeeDetail.details[0]; %>
-<div class="card mb-4"><div class="card-body"><h3 class="h5">Información histórica · <%= info.empleado_nombre %></h3><div class="row small mb-3"><div class="col-md-3"><strong>No. empleado:</strong> <%= info.no_empleado %></div><div class="col-md-3"><strong>Puesto:</strong> <%= info.puesto_nombre || '' %></div><div class="col-md-3"><strong>Departamento:</strong> <%= info.departamento_nombre || '' %></div><div class="col-md-3"><strong>Sucursal:</strong> <%= info.sucursal_nombre || '' %></div></div><div class="table-responsive"><table class="table table-sm table-bordered align-middle"><thead class="table-light"><tr><th>KPI</th><th>Objetivo</th><th>Unidad</th><th>Resultado</th><th>Semáforo</th><th>Puntaje base</th><th>Peso</th><th>Ponderado</th><th>Estado</th><th>Aprobado por</th><th>Fecha aprobación</th><th>En revisión por</th><th>Fecha revisión</th><th>Motivo</th><th>Comentario</th></tr></thead><tbody><% employeeDetail.details.forEach(d=>{ %><tr><td><%= d.kpi_nombre || '' %></td><td><%= d.objetivo || '' %></td><td><%= d.unidad || '' %></td><td><%= d.resultado ?? '' %></td><td><%= d.semaforo || '' %></td><td><%= d.puntaje_base ?? '' %></td><td><%= d.peso ?? '' %></td><td><%= d.puntaje_ponderado ?? '' %></td><td><%= d.estado || '' %></td><td><%= d.aprobado_por_nombre || '' %></td><td><%= fmt(d.fecha_aprobacion) %></td><td><%= d.revision_por_nombre || '' %></td><td><%= fmt(d.fecha_revision) %></td><td><%= d.motivo_revision || '' %></td><td><%= d.comentario_kpi || '' %></td></tr><% }); %></tbody></table></div><h4 class="h6 mt-3">Retroalimentación</h4><div class="row"><div class="col-md-4"><strong>Fortalezas</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.fortalezas || '—' %></div></div><div class="col-md-4"><strong>Áreas de oportunidad</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.areas_oportunidad || '—' %></div></div><div class="col-md-4"><strong>Compromisos</strong><div class="border rounded p-2 mt-1"><%= employeeDetail.feedback?.compromisos || '—' %></div></div></div></div></div>
-<% } %>
+<div class="modal fade history-detail-modal" id="historyEmployeeModal" tabindex="-1" aria-labelledby="historyEmployeeModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title h5 mb-0" id="historyEmployeeModalLabel">Detalle histórico</h3>
+          <div class="small text-muted" id="historyDetailPeriod"><%= monthLabel(period.mes) %> <%= period.anio %> · v<%= period.version %></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body">
+        <div id="historyDetailLoading" class="text-center py-5">
+          <div class="spinner-border text-primary" role="status"><span class="visually-hidden">Cargando…</span></div>
+          <div class="text-muted mt-2">Cargando detalle histórico…</div>
+        </div>
+        <div id="historyDetailError" class="alert alert-danger d-none mb-0"></div>
+        <div id="historyDetailContent" class="d-none">
+          <div class="row g-2 mb-3" id="historyEmployeeInfo"></div>
+          <h4 class="h6 mb-2">KPI del periodo</h4>
+          <div class="table-responsive history-detail-table-wrap">
+            <table class="table table-sm table-bordered table-hover align-middle mb-0">
+              <thead class="table-light">
+                <tr><th>KPI</th><th>Objetivo</th><th>Unidad</th><th>Resultado</th><th>Semáforo</th><th>Puntaje base</th><th>Peso</th><th>Ponderado</th><th>Estado</th><th>Aprobado por</th><th>Fecha aprobación</th><th>En revisión por</th><th>Fecha revisión</th><th>Motivo</th><th>Comentario</th></tr>
+              </thead>
+              <tbody id="historyDetailRows"></tbody>
+            </table>
+          </div>
+          <h4 class="h6 mt-4 mb-2">Retroalimentación</h4>
+          <div class="row g-3" id="historyFeedback"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .history-detail-modal { --bs-modal-width: min(96vw, 1500px); }
+  .history-detail-modal .modal-content { max-height: 92vh; }
+  .history-detail-table-wrap { max-height: 48vh; }
+  .history-detail-table-wrap thead th { position: sticky; top: 0; z-index: 2; white-space: nowrap; }
+  .history-detail-table-wrap td { min-width: 105px; }
+  .history-detail-table-wrap td:first-child { min-width: 230px; }
+  .history-feedback-box { min-height: 90px; white-space: pre-wrap; }
+</style>
 <% } %>
 
 <script>
@@ -56,4 +100,115 @@
   function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 })();
 </script>
+<% if (period) { %>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const modalEl = document.getElementById('historyEmployeeModal');
+  if (!modalEl) return;
+
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  const loading = document.getElementById('historyDetailLoading');
+  const errorBox = document.getElementById('historyDetailError');
+  const content = document.getElementById('historyDetailContent');
+  const infoBox = document.getElementById('historyEmployeeInfo');
+  const rowsBox = document.getElementById('historyDetailRows');
+  const feedbackBox = document.getElementById('historyFeedback');
+  const title = document.getElementById('historyEmployeeModalLabel');
+  const periodId = <%= Number(period.id) %>;
+
+  document.querySelectorAll('.js-history-detail').forEach(btn => {
+    btn.addEventListener('click', () => loadDetail(btn.dataset.employee));
+  });
+
+  async function loadDetail(noEmpleado) {
+    resetModal();
+    modal.show();
+    try {
+      const r = await fetch(`/admin/historicos/periodo/${periodId}/empleado/${encodeURIComponent(noEmpleado)}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || 'No se pudo consultar el detalle histórico.');
+      renderDetail(j.detail);
+    } catch (e) {
+      loading.classList.add('d-none');
+      content.classList.add('d-none');
+      errorBox.textContent = e.message || 'No se pudo consultar el detalle histórico.';
+      errorBox.classList.remove('d-none');
+    }
+  }
+
+  function resetModal() {
+    title.textContent = 'Detalle histórico';
+    loading.classList.remove('d-none');
+    errorBox.classList.add('d-none');
+    errorBox.textContent = '';
+    content.classList.add('d-none');
+    infoBox.innerHTML = '';
+    rowsBox.innerHTML = '';
+    feedbackBox.innerHTML = '';
+  }
+
+  function renderDetail(detail) {
+    const rows = Array.isArray(detail?.details) ? detail.details : [];
+    if (!rows.length) throw new Error('No se encontró información histórica para este empleado.');
+    const info = rows[0];
+    title.textContent = `Detalle histórico · ${info.empleado_nombre || info.no_empleado || ''}`;
+
+    infoBox.innerHTML = [
+      infoCard('No. empleado', info.no_empleado),
+      infoCard('Empleado', info.empleado_nombre),
+      infoCard('Puesto histórico', info.puesto_nombre),
+      infoCard('Departamento', info.departamento_nombre),
+      infoCard('Sucursal', info.sucursal_nombre)
+    ].join('');
+
+    rowsBox.innerHTML = rows.map(d => `<tr>
+      <td><strong>${esc(d.kpi_nombre)}</strong></td>
+      <td>${esc(d.objetivo)}</td>
+      <td>${esc(d.unidad)}</td>
+      <td>${esc(value(d.resultado))}</td>
+      <td>${esc(d.semaforo)}</td>
+      <td>${esc(value(d.puntaje_base))}</td>
+      <td>${esc(value(d.peso))}</td>
+      <td>${esc(value(d.puntaje_ponderado))}</td>
+      <td>${esc(d.estado)}</td>
+      <td>${esc(d.aprobado_por_nombre)}</td>
+      <td>${esc(fmtDate(d.fecha_aprobacion))}</td>
+      <td>${esc(d.revision_por_nombre)}</td>
+      <td>${esc(fmtDate(d.fecha_revision))}</td>
+      <td>${esc(d.motivo_revision)}</td>
+      <td>${esc(d.comentario_kpi)}</td>
+    </tr>`).join('');
+
+    const fb = detail.feedback || {};
+    feedbackBox.innerHTML = [
+      feedbackCard('Fortalezas', fb.fortalezas),
+      feedbackCard('Áreas de oportunidad', fb.areas_oportunidad),
+      feedbackCard('Compromisos', fb.compromisos)
+    ].join('');
+
+    loading.classList.add('d-none');
+    errorBox.classList.add('d-none');
+    content.classList.remove('d-none');
+  }
+
+  function infoCard(label, val) {
+    return `<div class="col-sm-6 col-xl"><div class="border rounded p-2 h-100"><div class="small text-muted">${esc(label)}</div><strong>${esc(val || '—')}</strong></div></div>`;
+  }
+  function feedbackCard(label, val) {
+    return `<div class="col-lg-4"><strong>${esc(label)}</strong><div class="border rounded p-2 mt-1 history-feedback-box">${esc(val || '—')}</div></div>`;
+  }
+  function value(v) { return v === null || v === undefined ? '' : v; }
+  function fmtDate(v) {
+    if (!v) return '';
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('es-MX');
+  }
+  function esc(x) {
+    return String(x ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+});
+</script>
+<% } %>
 <%- include('partials/footer'); %>
