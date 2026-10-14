@@ -212,4 +212,75 @@ async function buildHistoricalWorkbook({ period, details, feedback, creatorName 
   return wb;
 }
 
-module.exports={ MONTHS, EQUIPO_HEADERS, parseHistoricalWorkbook, buildHistoricalWorkbook, monthToNumber, hashBuffer };
+function employeeNumberForExcel(value) {
+  const s=String(value??'').trim();
+  if(/^\d+$/.test(s) && !(/^0\d+/.test(s))) {
+    const n=Number(s);
+    if(Number.isSafeInteger(n)) return n;
+  }
+  return s;
+}
+
+async function buildHistoricalSummaryWorkbook({ period, employees }) {
+  const wb=new ExcelJS.Workbook();
+  wb.creator='KPI Manager CHC';
+  wb.created=new Date();
+  wb.subject='Resumen mensual histórico de KPI';
+
+  const ws=wb.addWorksheet('Resumen mensual', { views:[{state:'frozen',ySplit:5}] });
+  const headers=['No. empleado','Empleado','Puesto histórico','Departamento','Sucursal','KPI con resultado','KPI totales','Puntaje acum.'];
+  ws.mergeCells('A1:H1');
+  ws.getCell('A1').value=`Resumen mensual histórico de KPI - ${MONTHS[period.mes-1]||period.mes} ${period.anio}`;
+  ws.getCell('A1').font={bold:true,size:16,color:{argb:'FF17365D'}};
+  ws.getCell('A1').alignment={vertical:'middle',horizontal:'left'};
+  ws.getRow(1).height=24;
+
+  ws.mergeCells('A2:H2');
+  ws.getCell('A2').value=`Versión v${period.version} | ${period.origen==='SYSTEM_CLOSE'?'Generado por cierre oficial':'Importado desde Excel'} | ${Number(period.empleados_total||0).toLocaleString('es-MX')} colaboradores`;
+  ws.getCell('A2').font={italic:true,color:{argb:'FF666666'}};
+
+  ws.mergeCells('A3:H3');
+  ws.getCell('A3').value='La tabla incluye una fila por empleado. Usa las flechas de los encabezados para ordenar o filtrar por No. empleado, Empleado, Departamento y cualquier otra columna.';
+  ws.getCell('A3').font={size:10,color:{argb:'FF666666'}};
+  ws.getCell('A3').alignment={wrapText:true};
+
+  const rows=(employees||[]).map(e=>[
+    employeeNumberForExcel(e.no_empleado),
+    e.empleado_nombre||'',
+    e.puesto_nombre||'',
+    e.departamento_nombre||'',
+    e.sucursal_nombre||'',
+    Number(e.kpi_capturados||0),
+    Number(e.kpi_totales||0),
+    Number(e.puntaje_total||0)
+  ]);
+
+  ws.addTable({
+    name:'ResumenMensualHistorico',
+    ref:'A5',
+    headerRow:true,
+    totalsRow:false,
+    style:{theme:'TableStyleMedium2',showRowStripes:true},
+    columns:headers.map(name=>({name,filterButton:true})),
+    rows
+  });
+
+  ws.getColumn(1).width=16;
+  ws.getColumn(2).width=36;
+  ws.getColumn(3).width=34;
+  ws.getColumn(4).width=28;
+  ws.getColumn(5).width=28;
+  ws.getColumn(6).width=19;
+  ws.getColumn(7).width=14;
+  ws.getColumn(8).width=16;
+  ws.getColumn(8).numFmt='0.00';
+  for(let r=6;r<=5+rows.length;r++) {
+    ws.getRow(r).alignment={vertical:'middle'};
+    ws.getCell(r,8).numFmt='0.00';
+  }
+  ws.pageSetup={orientation:'landscape',fitToPage:true,fitToWidth:1,fitToHeight:0};
+  ws.headerFooter.oddFooter='&LCHC KPI Manager&CResumen histórico&R&P / &N';
+  return wb;
+}
+
+module.exports={ MONTHS, EQUIPO_HEADERS, parseHistoricalWorkbook, buildHistoricalWorkbook, buildHistoricalSummaryWorkbook, monthToNumber, hashBuffer };

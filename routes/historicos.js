@@ -4,7 +4,7 @@ const path = require('path');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
 const { logKpiManager } = require('../utils/logkpimanager');
-const { MONTHS, buildHistoricalWorkbook } = require('../services/historicosExcel');
+const { MONTHS, buildHistoricalWorkbook, buildHistoricalSummaryWorkbook } = require('../services/historicosExcel');
 const {
   analyzeImport, importHistorical, listPeriods, getPeriod, getEmployeeSummary,
   getFilters, getEmployeeDetail, getExportData
@@ -74,6 +74,26 @@ router.post('/admin/historicos/import', ...admin, uploadOne, async (req,res)=>{
     req.flash('success',`${MONTHS[result.parsed.month-1]} ${result.parsed.year} importado como histórico v${result.version}: ${result.parsed.stats.employees} colaboradores y ${result.parsed.stats.rows.toLocaleString('es-MX')} registros KPI.`);
     return res.redirect(`/admin/historicos/periodo/${result.id}`);
   }catch(e){ console.error('[Historicos] import',e); req.flash('error',e.message||'No se pudo importar el histórico. No se realizaron cambios.'); return res.redirect('/admin/historicos'); }
+});
+
+router.get('/admin/historicos/periodo/:id/export-resumen', ...admin, async (req,res)=>{
+  try{
+    const id=Number(req.params.id);
+    if(!Number.isInteger(id)||id<=0)return res.status(400).send('Histórico inválido');
+    const [period,employees]=await Promise.all([getPeriod(id),getEmployeeSummary(id)]);
+    if(!period)return res.status(404).send('Histórico no encontrado');
+    const wb=await buildHistoricalSummaryWorkbook({period,employees});
+    const buffer=await wb.xlsx.writeBuffer();
+    const filename=`KPIs_Historico_Resumen_${period.anio}-${String(period.mes).padStart(2,'0')}_v${period.version}.xlsx`;
+    await logKpiManager(req,{accion:'HISTORY_EXPORT',entidad:'kpi_historico_periodos',entidad_id:period.id,descripcion:'Exportó resumen mensual histórico de KPI',detalle:{anio:period.anio,mes:period.mes,version:period.version,tipo:'RESUMEN_MENSUAL',empleados:employees.length}});
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);
+    return res.send(Buffer.from(buffer));
+  }catch(e){
+    console.error('[Historicos] export resumen',e);
+    req.flash('error','No se pudo exportar el resumen mensual del histórico.');
+    return res.redirect(`/admin/historicos/periodo/${req.params.id}`);
+  }
 });
 
 router.get('/admin/historicos/periodo/:id/export', ...admin, async (req,res)=>{

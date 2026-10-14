@@ -136,3 +136,28 @@ No se sobrescribio ni rediseño ninguna tabla operativa existente. El modulo esc
 - El modal es amplio, tiene scroll propio y mantiene visible el encabezado de la tabla de KPI al desplazarse.
 - Al cerrarlo, el administrador permanece exactamente en la misma posición de la lista y conserva los filtros aplicados.
 - No se modificó ninguna tabla ni la lógica de generación/importación de históricos para este ajuste.
+
+## Ajuste de exportación - resumen mensual histórico
+
+Se agregó una segunda exportación en la vista de cada periodo histórico:
+
+- **Exportar detalle**: conserva la exportación completa existente con las hojas `Equipo`, `Retroalimentación` y `Resumen`.
+- **Exportar resumen mensual**: genera un Excel independiente con una sola fila por empleado y las mismas columnas visibles en la tabla principal del histórico:
+  - No. empleado
+  - Empleado
+  - Puesto histórico
+  - Departamento
+  - Sucursal
+  - KPI con resultado
+  - KPI totales
+  - Puntaje acum.
+
+El resumen mensual siempre toma a **todos los empleados con KPI del periodo histórico**, independientemente de los filtros que estén activos en pantalla.
+
+La hoja se genera como una **Tabla de Excel con filtros en los encabezados**, por lo que puede ordenarse y filtrarse directamente por No. empleado, nombre, departamento, puesto, sucursal y las demás columnas. Los números de empleado puramente numéricos se exportan como número para que el orden por ID sea natural; si un identificador contiene ceros a la izquierda u otro formato, se conserva como texto para no alterar el dato histórico.
+
+Ruta agregada:
+
+`GET /admin/historicos/periodo/:id/export-resumen`
+
+No requiere cambios de base de datos ni una nueva migración. La exportación se construye exclusivamente desde `kpi_historico_detalle`, por lo que no depende de datos operativos actuales.
