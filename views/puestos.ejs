@@ -1,5 +1,13 @@
 <%- include('partials/header') %>
-<h2 class="mb-4">Puestos</h2>
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-4">
+  <h2 class="mb-0">Puestos</h2>
+  <% if (typeof isAdmin !== 'undefined' && isAdmin) { %>
+    <a class="btn btn-success" href="/puestos/export-excel"
+       title="Descargar el resumen de puestos y el detalle de KPIs asignados en Excel">
+      <i class="bi bi-file-earmark-excel me-1"></i> Exportar puestos a Excel
+    </a>
+  <% } %>
+</div>
 
 <p>A continuación se listan todos los puestos configurados en el sistema.  Puede editar el nombre del puesto, su departamento y a quién responde directamente.  También puede hacer clic en "Asignar KPIs" para definir qué indicadores aplican a cada puesto.  En la parte inferior puede crear nuevos departamentos, agregar sucursales al departamento OPERACIONES o crear un puesto nuevo.</p>
 

@@ -3,6 +3,8 @@ const router = express.Router();
 const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
+const { logKpiManager } = require('../utils/logkpimanager');
+const { buildPuestosWorkbook } = require('../services/puestosExcel');
 
 /*
  * GET /puestos
@@ -59,6 +61,63 @@ router.get('/', isAuth, requireRole(['admin', 'manager']), async (req, res) => {
     console.error('Error al cargar puestos:', err);
     req.flash('error', 'No se pudo cargar la lista de puestos');
     return res.redirect('/dashboard');
+  }
+});
+
+/*
+ * GET /puestos/export-excel
+ * Descarga la estructura y las asignaciones actuales en dos hojas.
+ * Visible solo para administradores y protegido también en servidor.
+ * Una sola consulta evita divergencias entre resumen y detalle.
+ */
+router.get('/export-excel', isAuth, requireRole(['admin']), async (req, res) => {
+  try {
+    const [registros] = await pool.execute(
+      `SELECT
+         p.id AS puesto_id,
+         d.nombre AS departamento_nombre,
+         p.nombre AS puesto_nombre,
+         j.nombre AS responde_a_nombre,
+         dj.nombre AS responde_a_departamento,
+         p.role AS rol,
+         pk.kpi_id AS kpi_id,
+         k.nombre AS kpi_nombre,
+         k.objetivo AS objetivo,
+         k.unidad AS unidad,
+         k.periodicidad AS periodicidad,
+         pk.peso AS peso
+       FROM puestos p
+       JOIN departamentos d ON d.id = p.departamento_id
+       LEFT JOIN puestos j ON j.id = p.responde_a_id
+       LEFT JOIN departamentos dj ON dj.id = j.departamento_id
+       LEFT JOIN puesto_kpis pk ON pk.puesto_id = p.id
+       LEFT JOIN kpis k ON k.id = pk.kpi_id
+       ORDER BY d.nombre, p.nombre, p.id, k.nombre, k.id`
+    );
+
+    const { workbook, stats } = buildPuestosWorkbook({ registros });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const fecha = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Mexico_City' });
+    const nombreArchivo = `CHC_Puestos_y_KPIs_${fecha}.xlsx`;
+
+    await logKpiManager(req, {
+      accion: 'PUESTOS_EXPORT', entidad: 'puestos',
+      descripcion: 'Exportó el catálogo de puestos con KPIs asignados a Excel',
+      detalle: {
+        puestos: stats.puestos, departamentos: stats.departamentos,
+        asignaciones: stats.asignaciones, sin_kpis: stats.sinKpis,
+        revisar_pesos: stats.revisar
+      }
+    });
+
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${nombreArchivo}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error('[PUESTOS] No se pudo exportar el catálogo de puestos:', error);
+    req.flash('error', 'No se pudo generar el Excel de puestos y KPIs.');
+    return res.redirect('/puestos');
   }
 });
 
