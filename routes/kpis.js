@@ -24,6 +24,8 @@ function redirectToKpis(req, res, deptId, anchorId) {
 const { pool } = require('../db');
 const isAuth = require('../middleware/isAuth');
 const { requireRole } = require('../middleware/roles');
+const { logKpiManager } = require('../utils/logkpimanager');
+const { buildKpiCatalogWorkbook } = require('../services/kpiCatalogExcel');
 
 // Si un KPI es de tipo "porcentaje", estandarizamos los límites a un máximo de 100.00
 // (esto evita rangos > 100 que después no califican correctamente en el sistema).
@@ -185,6 +187,59 @@ function normalizeKpiPayload(raw) {
     departamento_id
   };
 }
+
+/*
+ * GET /kpis/export-excel
+ * Exporta el catálogo de KPIs en Excel. Solo administradores, tanto
+ * en la interfaz como en el servidor. Respeta filtros del listado.
+ */
+router.get('/export-excel', isAuth, requireRole(['admin']), async (req, res) => {
+  const selectedDepartamento = (req.query.departamento_id && req.query.departamento_id !== 'all')
+    ? String(req.query.departamento_id) : 'all';
+  const search = String(req.query.q || '').trim();
+  try {
+    let sql = `SELECT k.*, d.nombre AS departamento_nombre
+               FROM kpis k
+               LEFT JOIN departamentos d ON k.departamento_id = d.id`;
+    const params = [], where = [];
+    if (selectedDepartamento !== 'all') {
+      where.push('k.departamento_id = ?');
+      params.push(selectedDepartamento);
+    }
+    if (search) {
+      where.push('k.nombre LIKE ?');
+      params.push(`%${search}%`);
+    }
+    if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+    sql += ' ORDER BY d.nombre, k.nombre, k.id';
+    const [kpis] = await pool.execute(sql, params);
+
+    let departamento = 'Todos';
+    if (selectedDepartamento !== 'all') {
+      const [dept] = await pool.execute('SELECT nombre FROM departamentos WHERE id = ?', [selectedDepartamento]);
+      departamento = dept.length ? dept[0].nombre : `ID ${selectedDepartamento}`;
+    }
+    const workbook = buildKpiCatalogWorkbook({ kpis, departamento, busqueda: search });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const date = new Date().toLocaleDateString('sv-SE', {timeZone:'America/Mexico_City'});
+    const filename = `CHC_Catalogo_KPIs_${date}.xlsx`;
+    await logKpiManager(req, {
+      accion:'KPI_CATALOG_EXPORT', entidad:'kpis', descripcion:'Exportó catálogo de KPIs a Excel',
+      detalle:{registros:kpis.length,departamento_id:selectedDepartamento,busqueda:search}
+    });
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition',`attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control','private, no-store');
+    return res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error('[KPI] No se pudo exportar el catálogo:', error);
+    req.flash('error','No se pudo generar el Excel del catálogo de KPIs.');
+    const qs = new URLSearchParams();
+    if (selectedDepartamento !== 'all') qs.set('departamento_id', selectedDepartamento);
+    if (search) qs.set('q', search);
+    return res.redirect(`/kpis${qs.toString() ? `?${qs.toString()}` : ''}`);
+  }
+});
 
 /*
  * GET /kpis
